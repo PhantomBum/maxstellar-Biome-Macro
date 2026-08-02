@@ -69,9 +69,6 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - A plugin that crashes is disabled for the session and logged. It can never stop biome detection.
 - **Plugins are ordinary Python with full access to your PC — only use ones from people you trust.**
 
-**Optional plugin: v2 UI** (separate download — `extras/v2_ui.py`)
-- An alternative interface drawn with Dear ImGui — native, no browser. Left rail with grouped navigation, live colour-coded biome feed, session/uptime cards, and biome/webhook/settings pages. Drop it in `plugins/` to use it; the classic window is unchanged either way.
-
 **Overhauls**
 - **Webhook sending moved off the detection thread.** It used to send inline — a slow Discord, or three retries with backoff, stalled biome detection for seconds while the log kept moving. Messages now go to a queue drained by a dedicated sender, order preserved, and detection never waits on the network.
 - Multi-webhook URLs are re-read when you press Start instead of only at launch, so editing `config.ini` no longer needs a restart.

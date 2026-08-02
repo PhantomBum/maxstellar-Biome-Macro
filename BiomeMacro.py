@@ -1043,8 +1043,8 @@ def toggle_setting(key, var):
     refresh_runtime()
 
 
-# No button in the classic window any more -- kept because plugins call these
-# through api.main, and the v2 UI puts them on its Settings page.
+# No button in the classic window any more -- kept because plugins reach them
+# through api.main.
 def open_folder():
     os.startfile(DATA_DIR)
 
@@ -1336,11 +1336,6 @@ Events
 Handlers run on the UI thread, so touching widgets is safe. If a plugin raises,
 it is disabled for the rest of the session and the macro keeps running -- a
 broken plugin can never stop biome detection.
-
-Optional plugins
-----------------
-  v2 UI   an alternative Dear ImGui interface, downloaded separately.
-          Needs: pip install dearpygui
 
 A word of warning
 -----------------

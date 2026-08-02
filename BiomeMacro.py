@@ -536,7 +536,22 @@ def format_duration(seconds):
     return f"{seconds}s"
 
 
+_recent_announce = {}
+REANNOUNCE_GUARD_SECONDS = 5
+
+
 def announce_biome_start(biome):
+    # Safety net independent of any single bug: if the same biome is announced twice
+    # in a few seconds, something is replaying and the user should get one message,
+    # not two hundred. Logged loudly so the real fault stays visible.
+    now = time.time()
+    previous = _recent_announce.get(biome)
+    if previous is not None and now - previous < REANNOUNCE_GUARD_SECONDS:
+        logger.warning("Suppressed duplicate '%s' announcement %.2fs after the last one.",
+                       biome, now - previous)
+        return
+    _recent_announce[biome] = now
+
     info = biome_info(biome)
     action = get_action(biome)
     ui_queue.put(("log", time.strftime('%H:%M:%S') + f": Biome Started - {biome}"))
@@ -544,6 +559,7 @@ def announce_biome_start(biome):
         logger.warning("Unknown biome '%s' -- add it to biomes.json to give it a colour and thumbnail.", biome)
     session_counts[biome] += 1
     write_history(biome, "started")
+    fire_event("biome_start", biome)
     if RT['title_biome'] and not paused:
         set_title(biome)
     notify_desktop("Biome Started", biome)
@@ -569,6 +585,7 @@ def announce_biome_end(biome, started_at):
     ui_queue.put(("log", time.strftime('%H:%M:%S') + f": Biome Ended - {biome}"))
     elapsed = int(time.time() - started_at) if started_at else ""
     write_history(biome, "ended", elapsed)
+    fire_event("biome_end", biome, elapsed)
     if RT['title_biome'] and not paused:
         set_title("Running")
     if get_action(biome) == "Nothing":
@@ -695,13 +712,13 @@ def read_current_biome(path, tail_bytes=250000):
     sitting in was never reported."""
     try:
         size = os.path.getsize(path)
-        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+        with open(path, 'rb') as f:
             if size > tail_bytes:
                 f.seek(size - tail_bytes)
                 f.readline()  # discard the partial line we landed in
             latest = None
-            for line in f:
-                found = parse_hover_text(line)
+            for raw in f:
+                found = parse_hover_text(raw.decode('utf-8', 'ignore'))
                 if found:
                     latest = found
             return latest
@@ -751,7 +768,13 @@ def watch_loop():
                         ui_queue.put(("log", "Log file rotated, switching over."))
                         handle.close()
                     try:
-                        handle = open(latest, 'r', encoding='utf-8', errors='ignore')
+                        # BINARY, not text. TextIOWrapper.tell() returns an opaque
+                        # cookie with the decoder state packed into the high bits, not
+                        # a byte offset -- on a real Roblox log it comes back as
+                        # ~1.8e19, so the truncation check below saw "size < tell",
+                        # rewound to the top and replayed the entire log as if it were
+                        # live. That is what spammed the webhook.
+                        handle = open(latest, 'rb')
                     except OSError as exc:
                         logger.error("Could not open log file %s: %s", latest, exc)
                         handle = None
@@ -783,17 +806,20 @@ def watch_loop():
                     stop_event.wait(2)
                     continue
 
-            # detect truncation (same path, file replaced under us)
+            # detect truncation (same path, file replaced under us). Valid now that
+            # handle is binary and tell() is a real byte offset.
             try:
                 if os.path.getsize(current_path) < handle.tell():
+                    logger.info("Log file was truncated, restarting from the top.")
                     handle.seek(0)
             except OSError:
                 pass
 
-            line = handle.readline()
-            if not line:
+            raw = handle.readline()
+            if not raw:
                 stop_event.wait(poll)
                 continue
+            line = raw.decode('utf-8', 'ignore')
 
             if '"command":"SetRichPresence"' not in line:
                 continue
@@ -876,6 +902,7 @@ def init():
     threading.Thread(target=send_status, args=("Macro started!",), daemon=True).start()
     worker = threading.Thread(target=watch_loop, daemon=True)
     worker.start()
+    fire_event("macro_start")
     root.title(APP_NAME + " - Running")
 
 
@@ -908,6 +935,7 @@ def stop():
     set_cfg('Macro', 'roblox_username', roblox_username.get())
     if started:
         stop_event.set()
+        dispatch_event("macro_stop", ())
 
         def _farewell():
             send_session_summary()
@@ -941,6 +969,8 @@ def pump_ui():
                 show_balloon(*payload)
             elif kind == "error":
                 message_box(payload, "Detection Stopped")
+            elif kind == "event":
+                dispatch_event(*payload)
     except queue.Empty:
         pass
     root.after(100, pump_ui)
@@ -1207,6 +1237,171 @@ stop_button = customtkinter.CTkButton(root, text="Stop",
                                       command=stop)
 stop_button.grid(row=1, column=2, padx=(5, 0), pady=(10, 0), sticky="w")
 
+# ---------------------------------------------------------------- plugins
+
+PLUGIN_DIR = os.path.join(DATA_DIR, 'plugins')
+_plugin_handlers = {}   # event name -> [(plugin name, callback)]
+_loaded_plugins = []
+_disabled_plugins = set()
+
+PLUGIN_README = """\
+maxstellar's Biome Macro -- plugins
+===================================
+
+Drop a .py file in this folder and it loads the next time the macro starts.
+
+A plugin may define register(api). Everything else is optional.
+
+    def register(api):
+        api.log("hello from my plugin")
+        api.on("biome_start", lambda biome: api.log("started " + biome))
+
+What api gives you
+------------------
+  api.name                 this plugin's filename
+  api.log(msg)             write to crash.log, prefixed with the plugin name
+  api.on(event, fn)        subscribe to an event (see below)
+  api.send(embed, content) send through the macro's webhook layer, with retries
+  api.make_embed(...)      build a Discord embed the same way the macro does
+  api.add_tab(title)       add your own tab to the window, returns its frame
+  api.root                 the CTk window
+  api.tabview              the tab bar
+  api.config               config.ini (configparser), api.save_config() to persist
+  api.state                live settings dict the detection thread reads
+  api.biomes               the biome registry loaded from biomes.json
+  api.main                 every module-level name as a dict --
+                           api.main["init"](), api.main["webhookURL"], and so on
+  api.data_dir             folder next to the .exe
+  api.version              macro version string
+
+Events
+------
+  biome_start(biome)       a biome began
+  biome_end(biome, secs)   a biome ended, with how long it lasted
+  macro_start()            detection started
+  macro_stop()             detection stopped
+
+Handlers run on the UI thread, so touching widgets is safe. If a plugin raises,
+it is disabled for the rest of the session and the macro keeps running -- a
+broken plugin can never stop biome detection.
+
+A word of warning
+-----------------
+Plugins are ordinary Python and run with full access to your machine. Only add
+plugins from people you trust, the same way you would treat any .exe.
+"""
+
+
+def seed_plugin_folder():
+    """Create plugins/ next to the exe and copy the bundled ones in on first run."""
+    try:
+        os.makedirs(PLUGIN_DIR, exist_ok=True)
+        readme = os.path.join(PLUGIN_DIR, 'README.txt')
+        if not os.path.exists(readme):
+            with open(readme, 'w', encoding='utf-8') as f:
+                f.write(PLUGIN_README)
+        bundled = os.path.join(BUNDLE_DIR, 'plugins')
+        if os.path.isdir(bundled) and os.path.abspath(bundled) != os.path.abspath(PLUGIN_DIR):
+            for name in os.listdir(bundled):
+                if not name.endswith('.py'):
+                    continue
+                target = os.path.join(PLUGIN_DIR, name)
+                if not os.path.exists(target):
+                    shutil.copyfile(os.path.join(bundled, name), target)
+    except OSError as exc:
+        logger.error("Could not prepare the plugins folder: %s", exc)
+
+
+class PluginAPI:
+    """Full access, as designed -- window, config, webhooks, detection state."""
+
+    def __init__(self, name):
+        self.name = name
+        self.root = root
+        self.tabview = tabview
+        self.config = config
+        self.save_config = save_config
+        self.state = RT
+        self.biomes = BIOMES
+        self.data_dir = DATA_DIR
+        self.plugin_dir = PLUGIN_DIR
+        self.version = APP_VERSION
+        self.app_name = APP_NAME
+        self.logger = logger
+        self.send = send
+        self.make_embed = make_embed
+        self.biome_info = biome_info
+        # full access, as chosen: every module-level name, so a plugin can reach
+        # init/pause/stop, the Tk variables, set_cfg, and anything else it needs
+        self.main = globals()
+
+    def log(self, message):
+        logger.info("[%s] %s", self.name, message)
+
+    def on(self, event, callback):
+        _plugin_handlers.setdefault(event, []).append((self.name, callback))
+
+    def add_tab(self, title):
+        tabview.add(title)
+        return tabview.tab(title)
+
+    @property
+    def started(self):
+        return started
+
+    @property
+    def paused(self):
+        return paused
+
+
+def dispatch_event(event, args):
+    """Runs on the UI thread via pump_ui, so plugins may touch widgets safely."""
+    for plugin_name, callback in list(_plugin_handlers.get(event, [])):
+        if plugin_name in _disabled_plugins:
+            continue
+        try:
+            callback(*args)
+        except Exception as exc:
+            logger.exception("Plugin '%s' failed handling %s: %s", plugin_name, event, exc)
+            _disabled_plugins.add(plugin_name)
+            ui_queue.put(("log", f"Plugin '{plugin_name}' errored and was disabled."))
+
+
+def fire_event(event, *args):
+    """Safe to call from the detection thread; delivery happens on the UI thread."""
+    if _plugin_handlers.get(event):
+        ui_queue.put(("event", (event, args)))
+
+
+def load_plugins():
+    seed_plugin_folder()
+    if not os.path.isdir(PLUGIN_DIR):
+        return
+    import importlib.util
+    for filename in sorted(os.listdir(PLUGIN_DIR)):
+        if not filename.endswith('.py') or filename.startswith('_'):
+            continue
+        path = os.path.join(PLUGIN_DIR, filename)
+        try:
+            modname = "biomeplugin_" + filename[:-3]
+            spec = importlib.util.spec_from_file_location(modname, path)
+            module = importlib.util.module_from_spec(spec)
+            # register before executing, so the plugin behaves like a normal module:
+            # relative imports, dataclasses and pickling all look it up in sys.modules
+            sys.modules[modname] = module
+            spec.loader.exec_module(module)
+            if hasattr(module, 'register'):
+                module.register(PluginAPI(filename))
+            _loaded_plugins.append(filename)
+            logger.info("Loaded plugin: %s", filename)
+        except Exception as exc:
+            # a broken plugin must never stop the macro from detecting biomes
+            logger.exception("Plugin '%s' failed to load: %s", filename, exc)
+            _disabled_plugins.add(filename)
+    if _loaded_plugins:
+        print(f"Plugins loaded: {', '.join(_loaded_plugins)}")
+
+
 # multi-webhook sanity check, kept from the original (including the attitude)
 if multi_webhook.get() == "1":
     if len(webhook_urls) < 2:
@@ -1218,6 +1413,8 @@ if multi_webhook.get() == "1":
         message_box("bro you do not need this many webhooks", "okay dude wtf")
 
 
+
+load_plugins()
 
 root.protocol("WM_DELETE_WINDOW", on_close)
 root.bind("<Button-1>", lambda e: e.widget.focus_set())

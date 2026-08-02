@@ -60,6 +60,18 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - Added **Blazing Sun** (confirmed against real Roblox logs)
 - Removed Pumpkin Moon and Graveyard
 
+**Critical fix — the webhook spam**
+- **The macro could replay the whole log and fire hundreds of webhooks.** It tailed the log in text mode, where `tell()` returns an opaque decoder cookie rather than a byte offset — on a real Roblox log it comes back as ~1.8×10¹⁹. The truncation check read that as "the file shrank", rewound to the top and re-announced every biome in the file's history as if it were live. On a real 8.7 MB log this fires 54 times. The log is now read in binary, where `tell()` is a true byte offset. A second guard suppresses any repeat of the same biome within 5 seconds, so nothing can spam like that again.
+
+**Plugins**
+- A `plugins/` folder is created next to the .exe on first run. Drop a `.py` file in it and it loads on the next start. See `plugins/README.txt` for the API.
+- Plugins can react to `biome_start`, `biome_end`, `macro_start` and `macro_stop`, add their own tab, send webhooks, and reach the rest of the macro.
+- A plugin that crashes is disabled for the session and logged. It can never stop biome detection.
+- **Plugins are ordinary Python with full access to your PC — only use ones from people you trust.**
+
+**New plugin: v2 UI**
+- A second, larger interface drawn with Dear ImGui — native, no browser. Sidebar navigation, live biome feed, session counters, and biome/webhook/settings pages. The classic window keeps working unchanged; delete `plugins/v2_ui.py` if you don't want it.
+
 **Detection accuracy**
 - **It now reads the biome you are in the moment it attaches**, from the last rich-presence line in the log, instead of waiting for the next change. Starting the macro during a rare biome used to report nothing at all.
 - **Only fully capitalised hover text counts as a biome.** The presence payload also carries `Sol's RNG`, and anything mixed-case is a title, not a biome — so a payload change can never turn the game's name into a fake biome alert.

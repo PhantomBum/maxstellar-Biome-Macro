@@ -167,6 +167,9 @@ DEFAULTS = {
                  'sound_alerts': "1", 'history_csv': "1", 'title_biome': "1", 'ping_role': "0",
                  'session_summary': "1"},
     'Biomes': {},
+    # per-biome ping target: <slug> = the id, <slug>_type = user|role.
+    # Empty means "fall back to the global Discord User ID".
+    'BiomePings': {},
 }
 
 if os.path.exists(config_name):
@@ -284,6 +287,7 @@ RT = {
     'title_biome': True,
     'ping_role': False,
     'session_summary': True,
+    'ping_targets': {},
     'actions': {name: info['default'] for name, info in BIOMES.items()},
 }
 
@@ -322,6 +326,11 @@ def refresh_runtime():
     for name, var in biome_vars.items():
         # hard-coded biomes ignore config entirely and always use their fixed action
         RT['actions'][name] = var.get() if BIOMES[name]['configurable'] else BIOMES[name]['default']
+    RT['ping_targets'] = {
+        name: (cfg('BiomePings', info['slug']).strip(),
+               cfg('BiomePings', info['slug'] + '_type', 'user').strip().lower())
+        for name, info in BIOMES.items()
+    }
 
 # ---------------------------------------------------------------- state
 
@@ -615,8 +624,13 @@ def announce_biome_start(biome):
     content = None
     if info['everyone']:
         content = "@everyone"
-    elif action == "Ping" and RT['disc_id'].isnumeric():
-        content = f"<@&{RT['disc_id']}>" if RT['ping_role'] else f"<@{RT['disc_id']}>"
+    elif action == "Ping":
+        # a per-biome target wins; otherwise fall back to the global Discord User ID
+        target, kind = RT['ping_targets'].get(biome, ("", "user"))
+        if not target.isnumeric():
+            target, kind = RT['disc_id'], ("role" if RT['ping_role'] else "user")
+        if target.isnumeric():
+            content = f"<@&{target}>" if kind == "role" else f"<@{target}>"
     send(embed, content)
 
 

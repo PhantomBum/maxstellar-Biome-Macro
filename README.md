@@ -39,7 +39,9 @@ When Sol's RNG adds a biome you don't need to touch the code — edit **`biomes.
 
 The biome then shows up automatically in **Configure Pings**. If a biome appears that isn't in the file yet, the macro still reports it with a fallback colour and notes it in `crash.log`, so you'll never silently miss one.
 
-To find the exact name a new biome uses, trigger it once and search your latest Roblox log for `SetRichPresence` — the `hoverText` value is the name.
+To find the exact name a new biome uses, trigger it once and search your latest Roblox log for `SetRichPresence` — the `largeImage.hoverText` value is the name. Note it must come from `largeImage`; `smallImage` always reads `Sol's RNG` and is not a biome.
+
+When running the .exe, edit the `biomes.json` that appears next to it — no rebuild needed.
 
 ## Common Issues
 ### Macro doesn't detect biomes
@@ -55,8 +57,9 @@ To find the exact name a new biome uses, trigger it once and search your latest 
 ## Changelog
 
 ### v2.5
-- Added **Blazing Sun**
+- Added **Blazing Sun** and **The Citadel of Orders** (both confirmed against real Roblox logs)
 - Removed Pumpkin Moon and Graveyard
+- **Fixed:** when built as an .exe, `config.ini` and `crash.log` were written into PyInstaller's temporary extraction folder, so settings reset on every launch. They now sit next to the .exe, and `biomes.json` is seeded beside it so biomes can be added without a rebuild
 - Biomes moved to `biomes.json`; adding one no longer needs a code change
 - Unknown/new biomes are reported instead of being silently dropped
 - **Fixed:** Heaven and Singularity never sent anything (a variable was assigned twice, so Singularity's setting was never created)

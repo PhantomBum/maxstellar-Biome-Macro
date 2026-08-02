@@ -2,6 +2,7 @@ import os
 import time
 import json
 import queue
+import shutil
 import threading
 import webbrowser
 import psutil
@@ -19,10 +20,20 @@ THUMB_BASE_URL = "https://maxstellar.github.io/biome_thumb/"
 FOOTER_ICON_URL = "https://maxstellar.github.io/maxstellar.png"
 UNKNOWN_BIOME_COLOR = "ff69b4"
 
-dirname = os.path.dirname(os.path.abspath(__file__))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# When frozen by PyInstaller, __file__ points inside the temporary extraction folder.
+# Bundled assets live there, but anything the user owns or edits -- config.ini,
+# crash.log, biomes.json -- has to sit next to the .exe or it silently resets every
+# launch. Keep the two apart.
+if getattr(sys, 'frozen', False):
+    BUNDLE_DIR = getattr(sys, '_MEIPASS', _SCRIPT_DIR)
+    DATA_DIR = os.path.dirname(sys.executable)
+else:
+    BUNDLE_DIR = DATA_DIR = _SCRIPT_DIR
 
 logging.basicConfig(
-    filename=os.path.join(dirname, 'crash.log'),
+    filename=os.path.join(DATA_DIR, 'crash.log'),
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
@@ -65,7 +76,18 @@ FALLBACK_BIOMES = [
 
 
 def load_biomes():
-    path = os.path.join(dirname, 'biomes.json')
+    """Prefer the biomes.json sitting next to the exe so users can add a biome without
+    a rebuild; fall back to the bundled copy, and seed one on first run."""
+    path = os.path.join(DATA_DIR, 'biomes.json')
+    if not os.path.exists(path):
+        bundled = os.path.join(BUNDLE_DIR, 'biomes.json')
+        if os.path.exists(bundled) and bundled != path:
+            try:
+                shutil.copyfile(bundled, path)
+            except OSError:
+                path = bundled
+        else:
+            path = bundled
     try:
         with open(path, 'r', encoding='utf-8') as f:
             entries = json.load(f)['biomes']
@@ -115,7 +137,7 @@ def biome_info(name):
 
 # ---------------------------------------------------------------- config
 
-config_name = os.path.join(dirname, 'config.ini')
+config_name = os.path.join(DATA_DIR, 'config.ini')
 config = configparser.ConfigParser()
 
 DEFAULTS = {
@@ -179,7 +201,7 @@ root = customtkinter.CTk()
 root.title(APP_NAME)
 root.geometry('505x285')
 root.resizable(False, False)
-root.iconbitmap(os.path.join(dirname, 'icon.ico'))
+root.iconbitmap(os.path.join(BUNDLE_DIR, 'icon.ico'))
 tabview = customtkinter.CTkTabview(root, width=505, height=230)
 tabview.grid(row=0, column=0, sticky='nsew', columnspan=75)
 tabview.add("Webhook")
@@ -618,7 +640,10 @@ def pump_ui():
             if kind == "title":
                 root.title(payload)
             elif kind == "log":
-                print(payload)
+                # PyInstaller's windowed mode sets sys.stdout to None, and print()
+                # would raise straight through the detection loop
+                if sys.stdout is not None:
+                    print(payload)
                 logger.info(payload)
     except queue.Empty:
         pass
@@ -642,11 +667,11 @@ def toggle_setting(key, var):
 
 
 def open_folder():
-    os.startfile(dirname)
+    os.startfile(DATA_DIR)
 
 
 def open_crash_log():
-    path = os.path.join(dirname, 'crash.log')
+    path = os.path.join(DATA_DIR, 'crash.log')
     if os.path.exists(path):
         os.startfile(path)
     else:
@@ -730,7 +755,7 @@ def manage_tlw():
 
     tlw.after(0, tlw.focus)
     tlw.after(100, lambda: tlw.resizable(False, False))
-    tlw.after(250, lambda: tlw.iconbitmap(os.path.join(dirname, 'icon.ico')))
+    tlw.after(250, lambda: tlw.iconbitmap(os.path.join(BUNDLE_DIR, 'icon.ico')))
 
 
 # ---------------------------------------------------------------- webhook tab
@@ -841,11 +866,11 @@ reset_button.grid(row=5, column=2, padx=(10, 0), pady=(14, 0), sticky="w")
 
 # ---------------------------------------------------------------- credits tab
 
-max_pfp = customtkinter.CTkImage(dark_image=Image.open(os.path.join(dirname, "maxstellar.png")), size=(70, 70))
+max_pfp = customtkinter.CTkImage(dark_image=Image.open(os.path.join(BUNDLE_DIR, "maxstellar.png")), size=(70, 70))
 max_pfp_label = customtkinter.CTkLabel(tabview.tab("Credits"), image=max_pfp, text="")
 max_pfp_label.grid(row=0, column=0, padx=(10, 0), pady=(10, 0), sticky="w")
 
-sols_sniper = customtkinter.CTkImage(dark_image=Image.open(os.path.join(dirname, "sols_sniper.png")), size=(70, 70))
+sols_sniper = customtkinter.CTkImage(dark_image=Image.open(os.path.join(BUNDLE_DIR, "sols_sniper.png")), size=(70, 70))
 sols_sniper_label = customtkinter.CTkLabel(tabview.tab("Credits"), image=sols_sniper, text="")
 sols_sniper_label.grid(row=1, column=0, padx=(10, 0), pady=(10, 0), sticky="w")
 

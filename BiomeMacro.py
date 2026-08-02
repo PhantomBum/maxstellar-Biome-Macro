@@ -299,6 +299,9 @@ def valid_webhook(url):
 
 def refresh_runtime():
     """Copy everything the worker needs out of the Tk vars. Call from the main thread only."""
+    global webhook_urls
+    # re-read from config each time: editing multi_webhook_urls used to need a restart
+    webhook_urls = cfg('Webhook', 'multi_webhook_urls').split()
     if multi_webhook.get() == "1":
         targets = [u for u in webhook_urls if valid_webhook(u)]
     else:
@@ -424,12 +427,43 @@ def have_valid_webhook():
     return len(RT['targets']) > 0
 
 
-def send(embed=None, content=None):
-    """Single send path for both single- and multi-webhook mode.
+webhook_queue = queue.Queue()
 
-    The old code duplicated ~90 lines between the two modes and called execute()
-    even when there was nothing to send, which Discord rejects with a 400.
+
+def send(embed=None, content=None):
+    """Queue a message. Returns immediately.
+
+    Sending used to happen inline on the detection thread, so a slow Discord --
+    or three retries with backoff -- stalled biome detection for seconds. The
+    log kept moving while we waited. Now a dedicated sender drains this queue,
+    order preserved, and detection never blocks on the network.
     """
+    if embed is None and not content:
+        return
+    webhook_queue.put((embed, content))
+
+
+def flush_webhooks(timeout=3.0):
+    """Wait for queued messages to go out, but never hang the UI on shutdown."""
+    deadline = time.time() + timeout
+    while not webhook_queue.empty() and time.time() < deadline:
+        time.sleep(0.05)
+
+
+def _webhook_worker():
+    while True:
+        item = webhook_queue.get()
+        try:
+            if item is not None:
+                _send_now(*item)
+        except Exception as exc:
+            logger.exception("Webhook sender crashed on one message: %s", exc)
+        finally:
+            webhook_queue.task_done()
+
+
+def _send_now(embed=None, content=None):
+    """The actual HTTP. Runs only on the sender thread."""
     if embed is None and not content:
         return
     targets = RT['targets']
@@ -472,6 +506,9 @@ def send(embed=None, content=None):
             logger.error("Gave up sending to a webhook after 3 attempts.")
 
 
+threading.Thread(target=_webhook_worker, daemon=True, name="webhook-sender").start()
+
+
 def make_embed(description, color=None, thumbnail=None, include_ps=False):
     embed = discord_webhook.DiscordEmbed(title="[" + time.strftime('%H:%M:%S') + "]", description=description)
     if color:
@@ -506,6 +543,9 @@ def write_history(biome, event, duration=""):
     path = os.path.join(DATA_DIR, 'biome_history.csv')
     try:
         with history_lock:
+            # same treatment crash.log gets: roll over instead of growing forever
+            if os.path.exists(path) and os.path.getsize(path) > 5 * 1024 * 1024:
+                os.replace(path, path + '.old')
             new = not os.path.exists(path)
             with open(path, 'a', encoding='utf-8', newline='') as f:
                 writer = csv.writer(f)
@@ -897,6 +937,7 @@ def init():
     paused = False
     session_started_at = time.time()
     session_counts.clear()
+    _recent_announce.clear()   # a stop/start inside 5s must not suppress the first biome
     stop_event.clear()
     refresh_runtime()
     threading.Thread(target=send_status, args=("Macro started!",), daemon=True).start()
@@ -929,6 +970,10 @@ def send_session_summary():
 
 
 def stop():
+    # stop rescheduling Tk callbacks first; anything still pending fires after
+    # destroy() and throws "invalid command name" into the log
+    global _shutting_down
+    _shutting_down = True
     set_cfg('Webhook', 'webhook_url', webhookURL.get())
     set_cfg('Webhook', 'private_server', psURL.get())
     set_cfg('Webhook', 'discord_user_id', discID.get())
@@ -940,6 +985,7 @@ def stop():
         def _farewell():
             send_session_summary()
             send_status("Macro stopped.")
+            flush_webhooks(3.0)
 
         # Discord being slow should not freeze the window on close.
         closer = threading.Thread(target=_farewell, daemon=True)
@@ -952,8 +998,13 @@ def on_close():
     stop()
 
 
+_shutting_down = False
+
+
 def pump_ui():
     """Drains worker messages on the main thread."""
+    if _shutting_down:
+        return
     try:
         while True:
             kind, payload = ui_queue.get_nowait()
@@ -973,7 +1024,8 @@ def pump_ui():
                 dispatch_event(*payload)
     except queue.Empty:
         pass
-    root.after(100, pump_ui)
+    if not _shutting_down:
+        root.after(100, pump_ui)
 
 
 def open_url(url):
@@ -1249,6 +1301,8 @@ maxstellar's Biome Macro -- plugins
 ===================================
 
 Drop a .py file in this folder and it loads the next time the macro starts.
+Copy _template.py to get started -- files beginning with "_" are skipped, so the
+template itself never runs.
 
 A plugin may define register(api). Everything else is optional.
 
@@ -1284,6 +1338,11 @@ Events
 Handlers run on the UI thread, so touching widgets is safe. If a plugin raises,
 it is disabled for the rest of the session and the macro keeps running -- a
 broken plugin can never stop biome detection.
+
+Optional plugins
+----------------
+  v2 UI   an alternative Dear ImGui interface, downloaded separately.
+          Needs: pip install dearpygui
 
 A word of warning
 -----------------

@@ -42,6 +42,9 @@ SECTIONS = (
 )
 PAGES = [key for _, items in SECTIONS for _, key, _ in items]
 
+CARD_PAD = (18, 16)      # must match _themes["card"] WindowPadding
+BRACKET_LEN = 14
+
 _api = None
 _dpg = None
 _running = False
@@ -51,6 +54,7 @@ _started_at = None
 _fonts = {}
 _themes = {}
 _cards = []
+_bracket_lines = {}
 _page = "notice"
 
 
@@ -181,7 +185,7 @@ def _build():
     _load_fonts()
     dpg.bind_theme(_base_theme())
 
-    _themes["card"] = _surface(CARD, border=BRACKET)
+    _themes["card"] = _surface(CARD, pad=CARD_PAD, border=(0, 0, 0, 0))
     _themes["rail"] = _surface(RAIL, pad=(0, 0))
     _themes["topbar"] = _surface(RAIL, pad=(12, 10))
     _themes["nav_off"] = _btn(RAIL, CARD_HI, DIM, align=0.0)
@@ -190,6 +194,9 @@ def _build():
     _themes["amber"] = _btn(AMBER, AMBER_HI, (20, 20, 20))
     _themes["red"] = _btn(RED, (232, 82, 82), (255, 255, 255))
     _themes["ghost"] = _btn(CARD_HI, ACCENT_DIM, DIM)
+
+    with dpg.viewport_drawlist(front=True, tag="overlay"):
+        pass
 
     with dpg.window(tag="root_window", no_scrollbar=True):
         with dpg.group(horizontal=True):
@@ -541,6 +548,69 @@ def _on_macro_stop():
 
 
 
+def _anchor_of(tag):
+    """First descendant that reports rect_min. Child windows do not expose it --
+    get_item_rect_min() raises KeyError on them -- but text items do, and that
+    gives us a true viewport-absolute point inside the card."""
+    stack = list(_dpg.get_item_children(tag, 1) or [])
+    while stack:
+        item = stack.pop(0)
+        try:
+            state = _dpg.get_item_state(item)
+        except Exception:
+            continue
+        if state.get("rect_min"):
+            return state["rect_min"]
+        stack.extend(_dpg.get_item_children(item, 1) or [])
+    return None
+
+
+def _draw_brackets():
+    """Corner brackets around each card.
+
+    Positions come from the card's own rect_size plus an anchor inside it, because
+    a child window exposes pos and rect_size but not rect_min. A hidden card
+    reports rect_size [0, 0], which doubles as the visibility test. Lines are
+    created once and only repositioned -- rebuilding the drawlist every frame is
+    what made this fall over the first time.
+    """
+    dpg = _dpg
+    for tag in _cards:
+        lines = _bracket_lines.get(tag)
+        if lines is None:
+            lines = [dpg.draw_line((0, 0), (0, 0), color=BRACKET, thickness=2,
+                                   parent="overlay", show=False) for _ in range(8)]
+            _bracket_lines[tag] = lines
+
+        rect = None
+        try:
+            if dpg.does_item_exist(tag):
+                w, h = dpg.get_item_state(tag).get("rect_size") or (0, 0)
+                if w > 8 and h > 8:
+                    anchor = _anchor_of(tag)
+                    if anchor:
+                        x1 = anchor[0] - CARD_PAD[0]
+                        y1 = anchor[1] - CARD_PAD[1]
+                        rect = (x1, y1, x1 + w, y1 + h)
+        except Exception:
+            rect = None
+
+        if rect is None:
+            for line in lines:
+                dpg.configure_item(line, show=False)
+            continue
+
+        x1, y1, x2, y2 = rect
+        i = 0
+        for px, py, dx, dy in ((x1, y1, 1, 1), (x2, y1, -1, 1),
+                               (x1, y2, 1, -1), (x2, y2, -1, -1)):
+            dpg.configure_item(lines[i], p1=(px, py),
+                               p2=(px + dx * BRACKET_LEN, py), show=True)
+            dpg.configure_item(lines[i + 1], p1=(px, py),
+                               p2=(px, py + dy * BRACKET_LEN), show=True)
+            i += 2
+
+
 def _tick():
     if not _running:
         return
@@ -560,6 +630,7 @@ def _tick():
         if _page == "status" and _dpg.does_item_exist("st_detect"):
             _dpg.set_value("st_detect", "running" if main.get("started") else "idle")
             _dpg.set_value("st_queue", str(main["webhook_queue"].qsize()))
+        _draw_brackets()
         _dpg.render_dearpygui_frame()
     except Exception as exc:
         _api.log(f"render stopped: {exc}")

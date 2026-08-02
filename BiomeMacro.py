@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import re
 import csv
 import queue
 import shutil
@@ -13,6 +14,7 @@ import customtkinter
 import logging
 import sys
 import ctypes
+import ctypes.wintypes as wintypes
 from collections import Counter
 from PIL import Image
 
@@ -156,7 +158,9 @@ config = configparser.ConfigParser()
 DEFAULTS = {
     'Webhook': {'webhook_url': "", 'private_server': "", 'discord_user_id': "", 'multi_webhook': "0",
                 'multi_webhook_urls': ""},
-    'Macro': {'aura_detection': "0", 'aura_ping': "0", 'min_rarity_to_ping': "", 'last_roblox_version': "",
+    # aura_* and min_rarity_to_ping are dead keys kept only so a v2.3/v2.4 config.ini
+    # still loads without complaint. Nothing reads them.
+    'Macro': {'aura_detection': "0", 'aura_ping': "0", 'min_rarity_to_ping': "",
               'roblox_username': "", 'seen_notice': "0"},
     'Settings': {'appearance': "Dark", 'desktop_notifications': "1", 'status_messages': "1",
                  'show_duration': "1", 'autostart': "0", 'poll_interval': "0.1",
@@ -285,13 +289,22 @@ RT = {
 }
 
 
+WEBHOOK_RE = re.compile(r'^https://(?:\w+\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+', re.I)
+
+
+def valid_webhook(url):
+    """'discord' appearing anywhere in the string used to be enough, so a channel link
+    or a half-copied URL passed validation and then failed silently at send time."""
+    return bool(WEBHOOK_RE.match((url or "").strip()))
+
+
 def refresh_runtime():
     """Copy everything the worker needs out of the Tk vars. Call from the main thread only."""
     if multi_webhook.get() == "1":
-        targets = [u for u in webhook_urls if u.startswith("https://") and "discord" in u]
+        targets = [u for u in webhook_urls if valid_webhook(u)]
     else:
         url = webhookURL.get().strip()
-        targets = [url] if url.startswith("https://") and "discord" in url else []
+        targets = [url] if valid_webhook(url) else []
     RT['targets'] = targets
     RT['ps_url'] = psURL.get().strip()
     RT['disc_id'] = discID.get().strip()
@@ -310,7 +323,6 @@ def refresh_runtime():
 
 # ---------------------------------------------------------------- state
 
-versions_directory = os.path.expandvars(r"%localappdata%\Roblox\Versions")
 log_directory = os.path.expandvars(r"%localappdata%\Roblox\logs")
 packages_path = os.path.expandvars(r"%localappdata%\Packages")
 roblox_folder = None
@@ -323,19 +335,79 @@ stop_event = threading.Event()
 ui_queue = queue.Queue()
 worker = None
 
-try:
-    from win11toast import toast as _toast
-except Exception:  # win11toast is optional; the macro works fine without it
-    _toast = None
+# Desktop notifications via Shell_NotifyIconW. This used to be win11toast, which
+# drags in winsdk -- 11 MB of the 31 MB executable for one balloon popup. Same
+# notification, no dependency, and it degrades to silence if Windows says no.
+NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
+NIF_ICON, NIF_TIP, NIF_INFO = 0x02, 0x04, 0x10
+IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x10, 0x40
+
+
+class NOTIFYICONDATA(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("hWnd", wintypes.HWND), ("uID", wintypes.UINT),
+                ("uFlags", wintypes.UINT), ("uCallbackMessage", wintypes.UINT),
+                ("hIcon", wintypes.HICON), ("szTip", wintypes.WCHAR * 128),
+                ("dwState", wintypes.DWORD), ("dwStateMask", wintypes.DWORD),
+                ("szInfo", wintypes.WCHAR * 256), ("uVersion", wintypes.UINT),
+                ("szInfoTitle", wintypes.WCHAR * 64), ("dwInfoFlags", wintypes.DWORD),
+                ("guidItem", ctypes.c_byte * 16), ("hBalloonIcon", wintypes.HICON)]
+
+
+_tray = {"nid": None, "shown": False, "timer": None}
+
+
+def _tray_data():
+    if _tray["nid"] is not None:
+        return _tray["nid"]
+    hwnd = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()
+    nid = NOTIFYICONDATA()
+    nid.cbSize = ctypes.sizeof(NOTIFYICONDATA)
+    nid.hWnd = hwnd
+    nid.uID = 1
+    nid.hIcon = ctypes.windll.user32.LoadImageW(
+        None, os.path.join(BUNDLE_DIR, 'icon.ico'), IMAGE_ICON, 0, 0,
+        LR_LOADFROMFILE | LR_DEFAULTSIZE)
+    nid.szTip = APP_NAME
+    _tray["nid"] = nid
+    return nid
+
+
+def _hide_tray():
+    _tray["timer"] = None
+    if not _tray["shown"]:
+        return
+    nid = _tray["nid"]
+    nid.uFlags = 0
+    ctypes.windll.shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid))
+    _tray["shown"] = False
+
+
+def show_balloon(title, body):
+    """Main thread only -- the tray icon belongs to the root window."""
+    try:
+        nid = _tray_data()
+        if not _tray["shown"]:
+            nid.uFlags = NIF_ICON | NIF_TIP
+            if not ctypes.windll.shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid)):
+                return
+            _tray["shown"] = True
+        nid.uFlags = NIF_INFO
+        nid.szInfoTitle = title[:63]
+        nid.szInfo = body[:255]
+        nid.dwInfoFlags = 0
+        ctypes.windll.shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid))
+        # drop the tray icon once the balloon has had its moment, so the macro
+        # doesn't leave a permanent icon the old build never had
+        if _tray["timer"] is not None:
+            root.after_cancel(_tray["timer"])
+        _tray["timer"] = root.after(8000, _hide_tray)
+    except Exception as exc:
+        logger.warning("Desktop notification failed: %s", exc)
 
 
 def notify_desktop(title, body):
-    if _toast is None or not RT['notifications']:
-        return
-    try:
-        _toast(title, body, duration="short")
-    except Exception as exc:
-        logger.warning("Desktop notification failed: %s", exc)
+    if RT['notifications']:
+        ui_queue.put(("notify", (title, body)))
 
 
 def set_title(suffix=None):
@@ -473,7 +545,7 @@ def announce_biome_start(biome):
         logger.warning("Unknown biome '%s' -- add it to biomes.json to give it a colour and thumbnail.", biome)
     session_counts[biome] += 1
     write_history(biome, "started")
-    if RT['title_biome']:
+    if RT['title_biome'] and not paused:
         set_title(biome)
     notify_desktop("Biome Started", biome)
     if action == "Ping" or info['everyone']:
@@ -498,7 +570,7 @@ def announce_biome_end(biome, started_at):
     ui_queue.put(("log", time.strftime('%H:%M:%S') + f": Biome Ended - {biome}"))
     elapsed = int(time.time() - started_at) if started_at else ""
     write_history(biome, "ended", elapsed)
-    if RT['title_biome']:
+    if RT['title_biome'] and not paused:
         set_title("Running")
     if get_action(biome) == "Nothing":
         return
@@ -533,8 +605,18 @@ def detect_roblox_version():
     return None
 
 
+_proc_cache = {"at": 0.0, "running": False}
+
+
 def is_roblox_running():
-    return detect_roblox_version() is not None
+    """Scanning every process 10x a second to ask one yes/no question costs about
+    1% of a core permanently. Roblox does not open and close that fast."""
+    now = time.time()
+    if now - _proc_cache["at"] < 2.0:
+        return _proc_cache["running"]
+    _proc_cache["at"] = now
+    _proc_cache["running"] = detect_roblox_version() is not None
+    return _proc_cache["running"]
 
 
 def get_latest_log_file():
@@ -565,15 +647,27 @@ def wait_for_log_file(timeout=30):
 
 # ---------------------------------------------------------------- detection worker
 
+# Pulling the biome straight out of the line survives things json.loads will not:
+# trailing text after the JSON object, or a line Roblox only half-flushed. Checked
+# against every rich-presence line in the local logs -- identical results, so this is
+# insurance rather than a fix.
+HOVER_RE = re.compile(r'"largeImage"\s*:\s*\{[^}]*?"hoverText"\s*:\s*"([^"]*)"')
+
+
 def parse_hover_text(line):
-    marker = '{"command":"SetRichPresence"'
-    start = line.find(marker)
+    if '"command":"SetRichPresence"' not in line:
+        return None
+    match = HOVER_RE.search(line)
+    if match:
+        hover = match.group(1)
+        return hover.strip().upper() if hover.strip() else None
+    # fall back to a strict parse in case the presence payload ever changes shape
+    start = line.find('{"command":"SetRichPresence"')
     if start == -1:
         return None
     try:
         data = json.loads(line[start:])
     except json.JSONDecodeError:
-        # Roblox occasionally flushes a partial line; skipping it is correct.
         return None
     hover = data.get("data", {}).get("largeImage", {}).get("hoverText", "")
     return hover.strip().upper() if hover else None
@@ -678,9 +772,16 @@ def watch_loop():
                 announce_biome_start(event)
             last_event = event
     except Exception as exc:
+        # A dead detector used to be completely silent -- the window still said
+        # "Running" while nothing was being watched. Never again.
         logger.exception("Detection thread crashed: %s", exc)
         ui_queue.put(("log", "Detection stopped -- see crash.log"))
-        set_title("Error")
+        set_title("STOPPED - see crash.log")
+        ui_queue.put(("error", "Detection stopped unexpectedly:\n\n"
+                               f"{type(exc).__name__}: {exc}\n\n"
+                               "Details are in crash.log (Settings -> View Log).\n"
+                               "Press Start to try again."))
+        globals()['started'] = False
     finally:
         if handle:
             handle.close()
@@ -737,7 +838,8 @@ def pause():
     if not started:
         return
     paused = not paused
-    root.title(APP_NAME + (" - Paused" if paused else " - Running"))
+    # through the queue like every other title change, so it cannot race the worker
+    set_title("Paused" if paused else "Running")
 
 
 def send_session_summary():
@@ -760,8 +862,15 @@ def stop():
     set_cfg('Macro', 'roblox_username', roblox_username.get())
     if started:
         stop_event.set()
-        send_session_summary()
-        send_status("Macro stopped.")
+
+        def _farewell():
+            send_session_summary()
+            send_status("Macro stopped.")
+
+        # Discord being slow should not freeze the window on close.
+        closer = threading.Thread(target=_farewell, daemon=True)
+        closer.start()
+        closer.join(timeout=3)
     root.destroy()
 
 
@@ -782,6 +891,10 @@ def pump_ui():
                 if sys.stdout is not None:
                     print(payload)
                 logger.info(payload)
+            elif kind == "notify":
+                show_balloon(*payload)
+            elif kind == "error":
+                message_box(payload, "Detection Stopped")
     except queue.Empty:
         pass
     root.after(100, pump_ui)
@@ -976,18 +1089,15 @@ appearance_menu = customtkinter.CTkOptionMenu(appearance_frame, values=["Dark", 
                                               width=110, height=26, variable=appearance, command=set_appearance)
 appearance_menu.grid(row=0, column=1, sticky="w")
 
-# Six settings, two columns, no scrolling. The rest (session summary, biome in
-# title, history CSV, second-copy warning) stay on by default and are editable in
-# config.ini -- they did not earn a place in a 505x285 window.
+# Only the settings a normal user actually changes. Everything else -- start/stop
+# messages, biome duration, role pings, session summary, biome in title, history
+# CSV, second-copy warning -- still works, defaults on, and lives in config.ini.
 notif_toggle = add_toggle("Desktop notifications", desktop_notifications, 'desktop_notifications', 1, 0)
 sound_toggle = add_toggle("Sound on rare biomes", sound_alerts, 'sound_alerts', 1, 1)
-status_toggle = add_toggle("Start/stop messages", status_messages, 'status_messages', 2, 0)
-duration_toggle = add_toggle("Show biome duration", show_duration, 'show_duration', 2, 1)
-role_toggle = add_toggle("Ping ID is a role", ping_role, 'ping_role', 3, 0)
-autostart_toggle = add_toggle("Start on launch", autostart, 'autostart', 3, 1)
+autostart_toggle = add_toggle("Start detecting on launch", autostart, 'autostart', 2, 0)
 
 button_frame = customtkinter.CTkFrame(settings_scroll, fg_color="transparent")
-button_frame.grid(row=4, column=0, columnspan=2, padx=(10, 0), pady=(12, 0), sticky="w")
+button_frame.grid(row=3, column=0, columnspan=2, padx=(10, 0), pady=(14, 0), sticky="w")
 
 def settings_button(text, column, row, command, **kwargs):
     button = customtkinter.CTkButton(button_frame, text=text,
@@ -999,15 +1109,14 @@ def settings_button(text, column, row, command, **kwargs):
 
 test_button = settings_button("Test Webhook", 0, 0, send_test_webhook)
 folder_button = settings_button("Open Folder", 1, 0, open_folder)
-history_button = settings_button("History", 2, 0, open_history)
-log_button = settings_button("View Log", 3, 0, open_crash_log)
-reset_button = settings_button("Reset", 4, 0, reset_settings,
+log_button = settings_button("View Log", 2, 0, open_crash_log)
+reset_button = settings_button("Reset", 3, 0, reset_settings,
                                fg_color="#8B2E2E", hover_color="#A33A3A")
 
 settings_info = customtkinter.CTkLabel(settings_scroll,
                                        text=f"v{APP_VERSION}  |  {len(BIOMES)} biomes loaded",
                                        font=customtkinter.CTkFont(family="Segoe UI", size=12))
-settings_info.grid(row=5, column=0, columnspan=2, padx=(10, 0), pady=(6, 0), sticky="w")
+settings_info.grid(row=4, column=0, columnspan=2, padx=(10, 0), pady=(10, 0), sticky="w")
 
 # ---------------------------------------------------------------- credits tab
 

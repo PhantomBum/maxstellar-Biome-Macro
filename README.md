@@ -63,6 +63,11 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 **Critical fix**
 - **The macro refused to detect anything if the Discord User ID field was empty.** That field is only needed for pings, but the check ran before detection started, so a default config (which ships with it blank) meant hitting Start did nothing at all. Leaving it empty is now fine — you just don't get pinged.
 
+**Lighter and quieter**
+- The .exe is **half the size**: 30 MB → 15 MB. Desktop notifications no longer need `win11toast`, which was pulling in 11 MB of Windows SDK binaries for one popup; they now use a native tray notification with no dependency at all
+- Idle CPU cut by ~95%. The macro was scanning every process on your PC ten times a second just to ask whether Roblox was open — now it asks every two seconds
+- Biome parsing is ~4x faster and no longer depends on the log line being perfectly formed JSON
+
 **Quality of life**
 - Sound alert on biomes set to Ping
 - Biome history saved to `biome_history.csv` (biome, start/end, duration)
@@ -87,7 +92,10 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - Errors are logged instead of silently swallowed by bare `except: pass`
 - **Fixed:** pausing discarded log lines outright, so resuming could miss the biome you were already in
 - Glitched, Dreamspace, Cyberspace and Singularity stay hard-coded and out of Configure Pings, as before — they are still detected and still ping
-- New **Settings** tab with six options, no scrolling. The Webhook and Credits tabs are pixel-identical to before, and the window is still 505x285
+- **Fixed:** if the detection thread died, the window still said "Running" while nothing was being watched. It now says so and tells you to check the log
+- **Fixed:** a slow Discord response could freeze the window when closing the macro
+- **Fixed:** webhook validation accepted any URL containing the word "discord", so a channel link passed and then failed silently at send time
+- New **Settings** tab: Appearance, desktop notifications, sound alerts and start-on-launch, plus Test Webhook / Open Folder / View Log / Reset. Everything else lives in `config.ini`. The Webhook and Credits tabs are pixel-identical to before, and the window is still 505x285
 - Removed the dead "Aura Detection [Not Working]" controls, which had no code behind them
 
 Enjoy!

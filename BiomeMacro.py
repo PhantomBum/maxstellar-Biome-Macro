@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import csv
 import queue
 import shutil
 import threading
@@ -12,6 +13,7 @@ import customtkinter
 import logging
 import sys
 import ctypes
+from collections import Counter
 from PIL import Image
 
 APP_VERSION = "2.5"
@@ -32,8 +34,17 @@ if getattr(sys, 'frozen', False):
 else:
     BUNDLE_DIR = DATA_DIR = _SCRIPT_DIR
 
+_LOG_PATH = os.path.join(DATA_DIR, 'crash.log')
+# The old build appended to crash.log forever. Long-running grinders ended up with
+# multi-megabyte logs that were useless for support.
+try:
+    if os.path.exists(_LOG_PATH) and os.path.getsize(_LOG_PATH) > 2 * 1024 * 1024:
+        os.replace(_LOG_PATH, _LOG_PATH + '.old')
+except OSError:
+    pass
+
 logging.basicConfig(
-    filename=os.path.join(DATA_DIR, 'crash.log'),
+    filename=_LOG_PATH,
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
@@ -146,7 +157,9 @@ DEFAULTS = {
     'Macro': {'aura_detection': "0", 'aura_ping': "0", 'min_rarity_to_ping': "", 'last_roblox_version': "",
               'roblox_username': "", 'seen_notice': "0"},
     'Settings': {'appearance': "Dark", 'desktop_notifications': "1", 'status_messages': "1",
-                 'show_duration': "1", 'autostart': "0", 'poll_interval': "0.1"},
+                 'show_duration': "1", 'autostart': "0", 'poll_interval': "0.1",
+                 'sound_alerts': "1", 'history_csv': "1", 'title_biome': "1", 'ping_role': "0",
+                 'session_summary': "1", 'single_instance': "1"},
     'Biomes': {},
 }
 
@@ -208,7 +221,7 @@ tabview.add("Webhook")
 tabview.add("Macro")
 tabview.add("Settings")
 tabview.add("Credits")
-tabview._segmented_button.configure(font=customtkinter.CTkFont(family="Segoe UI", size=15))
+tabview._segmented_button.configure(font=customtkinter.CTkFont(family="Segoe UI", size=16))
 tabview._segmented_button.grid(sticky="w", padx=15)
 
 webhookURL = customtkinter.StringVar(root, cfg('Webhook', 'webhook_url'))
@@ -226,6 +239,19 @@ desktop_notifications = customtkinter.IntVar(root, int(cfg('Settings', 'desktop_
 status_messages = customtkinter.IntVar(root, int(cfg('Settings', 'status_messages', '1')))
 show_duration = customtkinter.IntVar(root, int(cfg('Settings', 'show_duration', '1')))
 autostart = customtkinter.IntVar(root, int(cfg('Settings', 'autostart', '0')))
+sound_alerts = customtkinter.IntVar(root, int(cfg('Settings', 'sound_alerts', '1')))
+history_csv = customtkinter.IntVar(root, int(cfg('Settings', 'history_csv', '1')))
+title_biome = customtkinter.IntVar(root, int(cfg('Settings', 'title_biome', '1')))
+ping_role = customtkinter.IntVar(root, int(cfg('Settings', 'ping_role', '0')))
+session_summary = customtkinter.IntVar(root, int(cfg('Settings', 'session_summary', '1')))
+single_instance = customtkinter.IntVar(root, int(cfg('Settings', 'single_instance', '1')))
+
+SETTINGS_TK_VARS = {
+    'appearance': appearance, 'desktop_notifications': desktop_notifications,
+    'status_messages': status_messages, 'show_duration': show_duration, 'autostart': autostart,
+    'sound_alerts': sound_alerts, 'history_csv': history_csv, 'title_biome': title_biome,
+    'ping_role': ping_role, 'session_summary': session_summary, 'single_instance': single_instance,
+}
 
 # per-biome action vars, built from the registry instead of one hand-written global each
 biome_vars = {}
@@ -242,9 +268,15 @@ RT = {
     'targets': [],
     'ps_url': "",
     'disc_id': "",
+    'username': "",
     'notifications': True,
     'status_messages': True,
     'show_duration': True,
+    'sound': True,
+    'history': True,
+    'title_biome': True,
+    'ping_role': False,
+    'session_summary': True,
     'actions': {name: info['default'] for name, info in BIOMES.items()},
 }
 
@@ -259,9 +291,15 @@ def refresh_runtime():
     RT['targets'] = targets
     RT['ps_url'] = psURL.get().strip()
     RT['disc_id'] = discID.get().strip()
+    RT['username'] = roblox_username.get().strip()
     RT['notifications'] = desktop_notifications.get() == 1
     RT['status_messages'] = status_messages.get() == 1
     RT['show_duration'] = show_duration.get() == 1
+    RT['sound'] = sound_alerts.get() == 1
+    RT['history'] = history_csv.get() == 1
+    RT['title_biome'] = title_biome.get() == 1
+    RT['ping_role'] = ping_role.get() == 1
+    RT['session_summary'] = session_summary.get() == 1
     for name, var in biome_vars.items():
         RT['actions'][name] = var.get()
 
@@ -323,19 +361,39 @@ def send(embed=None, content=None):
         logger.warning("Nothing sent: no valid webhook URL configured.")
         return
     for url in targets:
-        try:
-            # timeout matters: without it a slow Discord response hangs the closing
-            # of the window, and stalls the detection thread behind it
-            hook = discord_webhook.DiscordWebhook(url=url, timeout=10)
-            if embed is not None:
-                hook.add_embed(embed)
-            if content:
-                hook.set_content(content)
-            response = hook.execute()
-            if response is not None and getattr(response, 'status_code', 200) >= 400:
-                logger.error("Webhook rejected (%s): %s", response.status_code, response.text[:300])
-        except Exception as exc:
-            logger.error("Webhook send failed: %s", exc)
+        for attempt in range(3):
+            try:
+                # timeout matters: without it a slow Discord response hangs the closing
+                # of the window, and stalls the detection thread behind it
+                hook = discord_webhook.DiscordWebhook(url=url, timeout=10)
+                if embed is not None:
+                    hook.add_embed(embed)
+                if content:
+                    hook.set_content(content)
+                response = hook.execute()
+                status = getattr(response, 'status_code', 200) if response is not None else 200
+                if status == 429:
+                    # rate limited -- Discord tells us how long to wait. Losing a
+                    # Glitched alert to a rate limit is the worst possible failure.
+                    try:
+                        wait = float(response.json().get('retry_after', 2))
+                    except Exception:
+                        wait = 2.0
+                    logger.warning("Rate limited, retrying in %.1fs", min(wait, 10))
+                    time.sleep(min(wait, 10))
+                    continue
+                if status >= 500:
+                    logger.warning("Discord %s, retrying (attempt %d)", status, attempt + 1)
+                    time.sleep(1 + attempt)
+                    continue
+                if status >= 400:
+                    logger.error("Webhook rejected (%s): %s", status, response.text[:300])
+                break
+            except Exception as exc:
+                logger.error("Webhook send failed (attempt %d): %s", attempt + 1, exc)
+                time.sleep(1 + attempt)
+        else:
+            logger.error("Gave up sending to a webhook after 3 attempts.")
 
 
 def make_embed(description, color=None, thumbnail=None, include_ps=False):
@@ -347,7 +405,44 @@ def make_embed(description, color=None, thumbnail=None, include_ps=False):
         embed.set_thumbnail(url=thumbnail)
     if include_ps and RT['ps_url']:
         embed.add_embed_field(name="Private Server Link", value=RT['ps_url'])
+    if include_ps and RT['username']:
+        embed.add_embed_field(name="Player", value=RT['username'])
     return embed
+
+
+def play_alert():
+    """Audible cue for the biomes worth looking up from whatever else you're doing."""
+    if not RT['sound']:
+        return
+    try:
+        import winsound
+        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+    except Exception as exc:
+        logger.debug("Sound alert failed: %s", exc)
+
+
+history_lock = threading.Lock()
+
+
+def write_history(biome, event, duration=""):
+    if not RT['history']:
+        return
+    path = os.path.join(DATA_DIR, 'biome_history.csv')
+    try:
+        with history_lock:
+            new = not os.path.exists(path)
+            with open(path, 'a', encoding='utf-8', newline='') as f:
+                writer = csv.writer(f)
+                if new:
+                    writer.writerow(["date", "time", "biome", "event", "seconds"])
+                writer.writerow([time.strftime('%Y-%m-%d'), time.strftime('%H:%M:%S'),
+                                 biome, event, duration])
+    except OSError as exc:
+        logger.warning("Could not write biome history: %s", exc)
+
+
+session_counts = Counter()
+session_started_at = None
 
 
 def send_status(text):
@@ -371,7 +466,13 @@ def announce_biome_start(biome):
     ui_queue.put(("log", time.strftime('%H:%M:%S') + f": Biome Started - {biome}"))
     if info.get('unknown'):
         logger.warning("Unknown biome '%s' -- add it to biomes.json to give it a colour and thumbnail.", biome)
+    session_counts[biome] += 1
+    write_history(biome, "started")
+    if RT['title_biome']:
+        set_title(biome)
     notify_desktop("Biome Started", biome)
+    if action == "Ping" or info['everyone']:
+        play_alert()
     if action == "Nothing":
         return
     description = "> ## Biome Started - " + biome
@@ -383,13 +484,17 @@ def announce_biome_start(biome):
     if info['everyone']:
         content = "@everyone"
     elif action == "Ping" and RT['disc_id'].isnumeric():
-        content = f"<@{RT['disc_id']}>"
+        content = f"<@&{RT['disc_id']}>" if RT['ping_role'] else f"<@{RT['disc_id']}>"
     send(embed, content)
 
 
 def announce_biome_end(biome, started_at):
     info = biome_info(biome)
     ui_queue.put(("log", time.strftime('%H:%M:%S') + f": Biome Ended - {biome}"))
+    elapsed = int(time.time() - started_at) if started_at else ""
+    write_history(biome, "ended", elapsed)
+    if RT['title_biome']:
+        set_title("Running")
     if get_action(biome) == "Nothing":
         return
     description = "> ## Biome Ended - " + biome
@@ -544,13 +649,19 @@ def watch_loop():
             if not line:
                 stop_event.wait(poll)
                 continue
-            if paused:
-                continue
 
             if '"command":"SetRichPresence"' not in line:
                 continue
             event = parse_hover_text(line)
             if not event or event == last_event:
+                continue
+
+            if paused:
+                # Track state silently while paused. The old code discarded lines
+                # outright, so resuming could miss the biome you were already in;
+                # replaying the backlog instead would spam every biome you sat out.
+                last_event = event
+                biome_started_at = time.time() if event != "NORMAL" else None
                 continue
 
             if event == "NORMAL":
@@ -573,7 +684,7 @@ def watch_loop():
 # ---------------------------------------------------------------- controls
 
 def init():
-    global started, paused, worker
+    global started, paused, worker, session_started_at
 
     if started:
         if paused:
@@ -601,6 +712,8 @@ def init():
 
     started = True
     paused = False
+    session_started_at = time.time()
+    session_counts.clear()
     stop_event.clear()
     refresh_runtime()
     threading.Thread(target=send_status, args=("Macro started!",), daemon=True).start()
@@ -617,6 +730,19 @@ def pause():
     root.title(APP_NAME + (" - Paused" if paused else " - Running"))
 
 
+def send_session_summary():
+    """What did this session actually catch? Cheap to produce, and the thing people
+    screenshot."""
+    if not RT['session_summary'] or not session_counts:
+        return
+    lines = [f"**{count}x** {name}" for name, count in session_counts.most_common()]
+    length = format_duration(time.time() - session_started_at) if session_started_at else "?"
+    embed = make_embed("> ## Session Summary\n> " + "\n> ".join(lines), color="6784E0")
+    embed.add_embed_field(name="Session Length", value=length)
+    embed.add_embed_field(name="Biomes Seen", value=str(sum(session_counts.values())))
+    send(embed)
+
+
 def stop():
     set_cfg('Webhook', 'webhook_url', webhookURL.get())
     set_cfg('Webhook', 'private_server', psURL.get())
@@ -624,6 +750,7 @@ def stop():
     set_cfg('Macro', 'roblox_username', roblox_username.get())
     if started:
         stop_event.set()
+        send_session_summary()
         send_status("Macro stopped.")
     root.destroy()
 
@@ -671,11 +798,19 @@ def open_folder():
 
 
 def open_crash_log():
-    path = os.path.join(DATA_DIR, 'crash.log')
+    if os.path.exists(_LOG_PATH) and os.path.getsize(_LOG_PATH) > 0:
+        os.startfile(_LOG_PATH)
+    else:
+        message_box("Nothing logged yet -- nothing has gone wrong.", "Nothing to show")
+
+
+def open_history():
+    path = os.path.join(DATA_DIR, 'biome_history.csv')
     if os.path.exists(path):
         os.startfile(path)
     else:
-        message_box("No crash.log yet -- nothing has gone wrong.", "Nothing to show")
+        message_box("No biome history yet. It is written once the macro detects a biome.",
+                    "Nothing to show")
 
 
 def send_test_webhook():
@@ -690,16 +825,17 @@ def send_test_webhook():
     notify_desktop("Test sent", "Check your Discord channel.")
 
 
+SETTING_VARS = SETTINGS_TK_VARS  # keeps reset in sync as settings get added
+
+
 def reset_settings():
     for key, value in DEFAULTS['Settings'].items():
         config.set('Settings', key, value)
     save_config()
-    appearance.set(DEFAULTS['Settings']['appearance'])
+    for key, var in SETTING_VARS.items():
+        default = DEFAULTS['Settings'][key]
+        var.set(default if isinstance(var, customtkinter.StringVar) else int(default))
     customtkinter.set_appearance_mode(DEFAULTS['Settings']['appearance'])
-    desktop_notifications.set(int(DEFAULTS['Settings']['desktop_notifications']))
-    status_messages.set(int(DEFAULTS['Settings']['status_messages']))
-    show_duration.set(int(DEFAULTS['Settings']['show_duration']))
-    autostart.set(int(DEFAULTS['Settings']['autostart']))
     refresh_runtime()
     message_box("Settings reset to defaults.", "Done")
 
@@ -728,27 +864,25 @@ def manage_tlw():
                                        font=customtkinter.CTkFont(family="Segoe UI", size=20))
     tlw_label.grid(row=0, column=0, columnspan=4, pady=10, padx=10)
 
-    scroll = customtkinter.CTkScrollableFrame(tlw, width=560, height=340)
-    scroll.grid(row=1, column=0, columnspan=4, padx=10, pady=(0, 10))
-
     def make_setter(name, info):
         def _set(new_val):
             set_cfg('Biomes', info['slug'], new_val)
             RT['actions'][name] = new_val
         return _set
 
-    # built from the registry, so every biome gets a row -- Pumpkin Moon, Graveyard,
-    # Heaven and Singularity previously had config entries but no way to change them
+    # Same two-column label/dropdown layout as before, just generated from the registry
+    # so every biome gets a row -- Heaven and Singularity previously had config entries
+    # with no way to change them.
     names = list(BIOMES.keys())
     half = (len(names) + 1) // 2
     for index, name in enumerate(names):
         info = BIOMES[name]
         column = 0 if index < half else 2
         row = (index if index < half else index - half) + 1
-        label = customtkinter.CTkLabel(scroll, text=info['label'],
+        label = customtkinter.CTkLabel(tlw, text=info['label'],
                                        font=customtkinter.CTkFont(family="Segoe UI", size=20))
         label.grid(column=column, row=row, padx=(10, 0), pady=10, sticky="w")
-        menu = customtkinter.CTkOptionMenu(scroll, values=["Message", "Ping", "Nothing"],
+        menu = customtkinter.CTkOptionMenu(tlw, values=["Message", "Ping", "Nothing"],
                                            font=customtkinter.CTkFont(family="Segoe UI", size=20),
                                            variable=biome_vars[name], command=make_setter(name, info))
         menu.grid(row=row, column=column + 1, sticky="w", padx=10, pady=10)
@@ -802,67 +936,72 @@ username_field.grid(row=0, column=1, padx=(172, 0), pady=(10, 0), sticky="w")
 biome_button = customtkinter.CTkButton(tabview.tab("Macro"), text="Configure Pings",
                                        font=customtkinter.CTkFont(family="Segoe UI", size=20, weight="bold"), width=75,
                                        command=manage_tlw)
-biome_button.grid(row=1, column=0, padx=(10, 0), columnspan=2, pady=(15, 0), sticky="w")
-
-test_button = customtkinter.CTkButton(tabview.tab("Macro"), text="Test Webhook",
-                                      font=customtkinter.CTkFont(family="Segoe UI", size=20, weight="bold"), width=75,
-                                      command=send_test_webhook)
-test_button.grid(row=1, column=1, padx=(172, 0), pady=(15, 0), sticky="w")
-
-biome_count_label = customtkinter.CTkLabel(tabview.tab("Macro"),
-                                           text=f"{len(BIOMES)} biomes loaded from biomes.json",
-                                           font=customtkinter.CTkFont(family="Segoe UI", size=15))
-biome_count_label.grid(row=2, column=0, columnspan=2, padx=(10, 0), pady=(15, 0), sticky="w")
+biome_button.grid(row=3, column=0, padx=(10, 0), columnspan=2, pady=(12, 0), sticky="w")
 
 # ---------------------------------------------------------------- settings tab
+#
+# Everything new lives here so the other three tabs stay exactly as they were.
+# A scrollable frame keeps the window at its original 505x285 no matter how many
+# settings get added later -- new options scroll instead of overflowing the tab.
 
-appearance_label = customtkinter.CTkLabel(tabview.tab("Settings"), text="Appearance:",
-                                          font=customtkinter.CTkFont(family="Segoe UI", size=20))
-appearance_label.grid(column=0, row=0, padx=(10, 0), pady=(5, 0), sticky="w")
+settings_scroll = customtkinter.CTkScrollableFrame(tabview.tab("Settings"), width=440, height=155,
+                                                   fg_color="transparent")
+settings_scroll.grid(row=0, column=0, padx=(5, 0), pady=(0, 0), sticky="nw")
 
-appearance_menu = customtkinter.CTkOptionMenu(tabview.tab("Settings"), values=["Dark", "Light", "System"],
-                                              font=customtkinter.CTkFont(family="Segoe UI", size=20),
-                                              width=130, variable=appearance, command=set_appearance)
-appearance_menu.grid(row=0, column=1, padx=(10, 0), pady=(8, 0), sticky="w")
 
-notif_toggle = customtkinter.CTkCheckBox(tabview.tab("Settings"), text="Desktop notifications",
-                                         font=customtkinter.CTkFont(family="Segoe UI", size=20),
-                                         variable=desktop_notifications,
-                                         command=lambda: toggle_setting('desktop_notifications', desktop_notifications))
-notif_toggle.grid(row=1, column=0, columnspan=2, padx=(10, 0), pady=(12, 0), sticky="w")
+def add_toggle(text, variable, key, row, column):
+    box = customtkinter.CTkCheckBox(
+        settings_scroll, text=text, font=customtkinter.CTkFont(family="Segoe UI", size=14),
+        checkbox_width=20, checkbox_height=20,
+        variable=variable, command=lambda: toggle_setting(key, variable))
+    box.grid(row=row, column=column, padx=(5, 8), pady=(7, 0), sticky="w")
+    return box
 
-status_toggle = customtkinter.CTkCheckBox(tabview.tab("Settings"), text="Start/stop webhook messages",
-                                          font=customtkinter.CTkFont(family="Segoe UI", size=20),
-                                          variable=status_messages,
-                                          command=lambda: toggle_setting('status_messages', status_messages))
-status_toggle.grid(row=2, column=0, columnspan=2, padx=(10, 0), pady=(10, 0), sticky="w")
 
-duration_toggle = customtkinter.CTkCheckBox(tabview.tab("Settings"), text="Show biome duration when it ends",
-                                            font=customtkinter.CTkFont(family="Segoe UI", size=20),
-                                            variable=show_duration,
-                                            command=lambda: toggle_setting('show_duration', show_duration))
-duration_toggle.grid(row=3, column=0, columnspan=2, padx=(10, 0), pady=(10, 0), sticky="w")
+appearance_frame = customtkinter.CTkFrame(settings_scroll, fg_color="transparent")
+appearance_frame.grid(row=0, column=0, columnspan=2, padx=(5, 0), pady=(4, 0), sticky="w")
+appearance_label = customtkinter.CTkLabel(appearance_frame, text="Appearance:",
+                                          font=customtkinter.CTkFont(family="Segoe UI", size=15))
+appearance_label.grid(column=0, row=0, padx=(0, 10), sticky="w")
+appearance_menu = customtkinter.CTkOptionMenu(appearance_frame, values=["Dark", "Light", "System"],
+                                              font=customtkinter.CTkFont(family="Segoe UI", size=15),
+                                              width=110, height=26, variable=appearance, command=set_appearance)
+appearance_menu.grid(row=0, column=1, sticky="w")
 
-autostart_toggle = customtkinter.CTkCheckBox(tabview.tab("Settings"), text="Start detecting on launch",
-                                             font=customtkinter.CTkFont(family="Segoe UI", size=20),
-                                             variable=autostart,
-                                             command=lambda: toggle_setting('autostart', autostart))
-autostart_toggle.grid(row=4, column=0, columnspan=2, padx=(10, 0), pady=(10, 0), sticky="w")
+# two columns so ten settings fit with barely any scrolling in the 505x285 window
+notif_toggle = add_toggle("Desktop notifications", desktop_notifications, 'desktop_notifications', 1, 0)
+title_toggle = add_toggle("Biome in window title", title_biome, 'title_biome', 1, 1)
+sound_toggle = add_toggle("Sound on ping biomes", sound_alerts, 'sound_alerts', 2, 0)
+history_toggle = add_toggle("Save biome history", history_csv, 'history_csv', 2, 1)
+status_toggle = add_toggle("Start/stop messages", status_messages, 'status_messages', 3, 0)
+role_toggle = add_toggle("Ping ID is a role", ping_role, 'ping_role', 3, 1)
+summary_toggle = add_toggle("Session summary", session_summary, 'session_summary', 4, 0)
+instance_toggle = add_toggle("Warn if already open", single_instance, 'single_instance', 4, 1)
+duration_toggle = add_toggle("Show biome duration", show_duration, 'show_duration', 5, 0)
+autostart_toggle = add_toggle("Start on launch", autostart, 'autostart', 5, 1)
 
-folder_button = customtkinter.CTkButton(tabview.tab("Settings"), text="Open Folder",
-                                        font=customtkinter.CTkFont(family="Segoe UI", size=15, weight="bold"),
-                                        width=110, command=open_folder)
-folder_button.grid(row=5, column=0, padx=(10, 0), pady=(14, 0), sticky="w")
+button_frame = customtkinter.CTkFrame(settings_scroll, fg_color="transparent")
+button_frame.grid(row=6, column=0, columnspan=2, padx=(5, 0), pady=(10, 4), sticky="w")
 
-log_button = customtkinter.CTkButton(tabview.tab("Settings"), text="View crash.log",
-                                     font=customtkinter.CTkFont(family="Segoe UI", size=15, weight="bold"),
-                                     width=110, command=open_crash_log)
-log_button.grid(row=5, column=1, padx=(10, 0), pady=(14, 0), sticky="w")
+def settings_button(text, column, row, command, **kwargs):
+    button = customtkinter.CTkButton(button_frame, text=text,
+                                     font=customtkinter.CTkFont(family="Segoe UI", size=13, weight="bold"),
+                                     width=100, height=26, command=command, **kwargs)
+    button.grid(row=row, column=column, padx=(0, 5), pady=(0, 5))
+    return button
 
-reset_button = customtkinter.CTkButton(tabview.tab("Settings"), text="Reset Settings",
-                                       font=customtkinter.CTkFont(family="Segoe UI", size=15, weight="bold"),
-                                       width=110, fg_color="#8B2E2E", hover_color="#A33A3A", command=reset_settings)
-reset_button.grid(row=5, column=2, padx=(10, 0), pady=(14, 0), sticky="w")
+
+test_button = settings_button("Test Webhook", 0, 0, send_test_webhook)
+folder_button = settings_button("Open Folder", 1, 0, open_folder)
+history_button = settings_button("Biome History", 0, 1, open_history)
+log_button = settings_button("View Log", 1, 1, open_crash_log)
+reset_button = settings_button("Reset Settings", 0, 2, reset_settings,
+                               fg_color="#8B2E2E", hover_color="#A33A3A")
+
+settings_info = customtkinter.CTkLabel(settings_scroll,
+                                       text=f"v{APP_VERSION}  |  {len(BIOMES)} biomes loaded",
+                                       font=customtkinter.CTkFont(family="Segoe UI", size=12))
+settings_info.grid(row=7, column=0, columnspan=2, padx=(5, 0), pady=(2, 4), sticky="w")
 
 # ---------------------------------------------------------------- credits tab
 
@@ -898,10 +1037,6 @@ support_link = customtkinter.CTkLabel(credits_frame_2, text="Discord", font=("Se
 support_link.grid(row=3, column=0, padx=(5, 0), sticky="nw")
 support_link.bind("<Button-1>", lambda e: open_url("https://discord.gg/solsniper"))
 
-version_label = customtkinter.CTkLabel(tabview.tab("Credits"), text=f"v{APP_VERSION}",
-                                       font=customtkinter.CTkFont(family="Segoe UI", size=13))
-version_label.grid(row=2, column=1, padx=(12, 0), pady=(6, 0), sticky="w")
-
 # ---------------------------------------------------------------- bottom buttons
 
 start_button = customtkinter.CTkButton(root, text="Start",
@@ -928,6 +1063,27 @@ if multi_webhook.get() == "1":
                     "this is ridiculous")
     elif len(webhook_urls) > 14:
         message_box("bro you do not need this many webhooks", "okay dude wtf")
+
+
+def check_single_instance():
+    """Two copies running means every alert arrives twice. Warn, but let the user
+    override -- some people genuinely watch two accounts."""
+    if single_instance.get() != 1:
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        globals()['_instance_mutex'] = kernel32.CreateMutexW(None, False, "maxstellar_biome_macro")
+        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            if ctypes.windll.user32.MessageBoxW(
+                    0, "Another copy of the macro looks like it is already running.\n\n"
+                       "Running two copies sends every alert twice. Open anyway?",
+                    "Already Running", 4) != 6:  # MB_YESNO, IDYES
+                sys.exit()
+    except Exception as exc:
+        logger.debug("Single-instance check skipped: %s", exc)
+
+
+check_single_instance()
 
 root.protocol("WM_DELETE_WINDOW", on_close)
 root.bind("<Button-1>", lambda e: e.widget.focus_set())

@@ -21,7 +21,6 @@
     { "name": "BLOOD RAIN",   "label": "Blood Rain",   "color": "FF0000", "default": "Message", "everyone": false },
     { "name": "HEAVEN",       "label": "Heaven",       "color": "E8C49E", "default": "Message", "everyone": false },
     { "name": "BLAZING SUN",  "label": "Blazing Sun",  "color": "FFB300", "default": "Message", "everyone": false, "thumbnail": "" },
-    { "name": "THE CITADEL OF ORDERS", "label": "Citadel of Orders", "color": "D4AF37", "default": "Ping", "everyone": false, "thumbnail": "" },
     { "name": "SINGULARITY",  "label": "Singularity",  "color": "FFA375", "default": "Ping",    "everyone": false },
     { "name": "DREAMSPACE",   "label": "Dreamspace",   "color": "FF7DFF", "default": "Ping",    "everyone": true  },
     { "name": "CYBERSPACE",   "label": "Cyberspace",   "color": "2C53A7", "default": "Ping",    "everyone": true  },

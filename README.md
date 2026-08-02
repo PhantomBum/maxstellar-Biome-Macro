@@ -57,8 +57,20 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 ## Changelog
 
 ### v2.5
-- Added **Blazing Sun** and **The Citadel of Orders** (both confirmed against real Roblox logs)
+- Added **Blazing Sun** (confirmed against real Roblox logs)
 - Removed Pumpkin Moon and Graveyard
+
+**Quality of life**
+- Sound alert on biomes set to Ping
+- Biome history saved to `biome_history.csv` (biome, start/end, duration)
+- Session summary posted when you stop: what you caught and how long you ran
+- Current biome shown in the window title
+- Ping ID can be treated as a **role** instead of a user
+- Warns if a second copy is already running, so you don't get every alert twice
+- Roblox username is attached to biome embeds
+- Test Webhook button
+- Failed webhooks now retry, including proper handling of Discord rate limits
+- `crash.log` rotates at 2 MB instead of growing forever
 - **Fixed:** when built as an .exe, `config.ini` and `crash.log` were written into PyInstaller's temporary extraction folder, so settings reset on every launch. They now sit next to the .exe, and `biomes.json` is seeded beside it so biomes can be added without a rebuild
 - Biomes moved to `biomes.json`; adding one no longer needs a code change
 - Unknown/new biomes are reported instead of being silently dropped
@@ -70,8 +82,8 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - **Fixed:** closing any child window could stop the macro (`<Destroy>` fires for child widgets too)
 - Detection moved to a background thread — the window no longer freezes
 - Errors are logged instead of silently swallowed by bare `except: pass`
-- New **Settings** tab: appearance, desktop notifications, start/stop messages, biome duration, start-on-launch, open folder, view crash.log, reset
-- New **Test Webhook** button
-- Removed the dead "Aura Detection [Not Working]" controls
+- **Fixed:** pausing discarded log lines outright, so resuming could miss the biome you were already in
+- New **Settings** tab holding every new option. The Webhook and Credits tabs are pixel-identical to before, and the window is still 505x285
+- Removed the dead "Aura Detection [Not Working]" controls, which had no code behind them
 
 Enjoy!

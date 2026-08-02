@@ -20,7 +20,6 @@
     { "name": "STARFALL",     "label": "Starfall",     "color": "6784E0", "default": "Message", "everyone": false },
     { "name": "CORRUPTION",   "label": "Corruption",   "color": "9042FF", "default": "Message", "everyone": false },
     { "name": "NULL",         "label": "Null",         "color": "000000", "default": "Message", "everyone": false },
-    { "name": "BLOOD RAIN",   "label": "Blood Rain",   "color": "FF0000", "default": "Message", "everyone": false },
     { "name": "HEAVEN",       "label": "Heaven",       "color": "E8C49E", "default": "Message", "everyone": false },
     { "name": "BLAZING SUN",  "label": "Blazing Sun",  "color": "FFB300", "default": "Message", "everyone": false, "thumbnail": "" },
     { "name": "SINGULARITY",  "label": "Singularity",  "color": "FFA375", "default": "Message", "everyone": false, "configurable": false },

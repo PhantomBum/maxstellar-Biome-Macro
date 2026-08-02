@@ -165,7 +165,7 @@ DEFAULTS = {
     'Settings': {'appearance': "Dark", 'desktop_notifications': "1", 'status_messages': "1",
                  'show_duration': "1", 'autostart': "0", 'poll_interval': "0.1",
                  'sound_alerts': "1", 'history_csv': "1", 'title_biome': "1", 'ping_role': "0",
-                 'session_summary': "1", 'single_instance': "1"},
+                 'session_summary': "1"},
     'Biomes': {},
 }
 
@@ -252,13 +252,12 @@ history_csv = customtkinter.IntVar(root, int(cfg('Settings', 'history_csv', '1')
 title_biome = customtkinter.IntVar(root, int(cfg('Settings', 'title_biome', '1')))
 ping_role = customtkinter.IntVar(root, int(cfg('Settings', 'ping_role', '0')))
 session_summary = customtkinter.IntVar(root, int(cfg('Settings', 'session_summary', '1')))
-single_instance = customtkinter.IntVar(root, int(cfg('Settings', 'single_instance', '1')))
 
 SETTINGS_TK_VARS = {
     'appearance': appearance, 'desktop_notifications': desktop_notifications,
     'status_messages': status_messages, 'show_duration': show_duration, 'autostart': autostart,
     'sound_alerts': sound_alerts, 'history_csv': history_csv, 'title_biome': title_biome,
-    'ping_role': ping_role, 'session_summary': session_summary, 'single_instance': single_instance,
+    'ping_role': ping_role, 'session_summary': session_summary,
 }
 
 # per-biome action vars, built from the registry instead of one hand-written global each
@@ -623,13 +622,20 @@ def get_latest_log_file():
     if not roblox_log_path or not os.path.isdir(roblox_log_path):
         return None
     try:
-        files = [f for f in os.listdir(roblox_log_path) if f.endswith(".log") and "Installer" not in f]
+        files = [f for f in os.listdir(roblox_log_path)
+                 if f.endswith(".log") and "Installer" not in f and "Studio" not in f]
     except OSError as exc:
         logger.error("Could not list log directory: %s", exc)
         return None
-    if not files:
+    # Only the Player client writes Sol's RNG rich presence. If Roblox Studio has been
+    # opened more recently than the game, the old "newest file by creation time" rule
+    # picked the Studio log and the macro sat there watching a file that will never
+    # contain a biome -- detection silently dead for anyone who has Studio installed.
+    candidates = [f for f in files if "_Player_" in f] or files
+    if not candidates:
         return None
-    latest = max(files, key=lambda f: os.path.getctime(os.path.join(roblox_log_path, f)))
+    # Modified time, not creation time: the live log is the one being written to now.
+    latest = max(candidates, key=lambda f: os.path.getmtime(os.path.join(roblox_log_path, f)))
     return os.path.join(roblox_log_path, latest)
 
 
@@ -1180,25 +1186,6 @@ if multi_webhook.get() == "1":
         message_box("bro you do not need this many webhooks", "okay dude wtf")
 
 
-def check_single_instance():
-    """Two copies running means every alert arrives twice. Warn, but let the user
-    override -- some people genuinely watch two accounts."""
-    if single_instance.get() != 1:
-        return
-    try:
-        kernel32 = ctypes.windll.kernel32
-        globals()['_instance_mutex'] = kernel32.CreateMutexW(None, False, "maxstellar_biome_macro")
-        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-            if ctypes.windll.user32.MessageBoxW(
-                    0, "Another copy of the macro looks like it is already running.\n\n"
-                       "Running two copies sends every alert twice. Open anyway?",
-                    "Already Running", 4) != 6:  # MB_YESNO, IDYES
-                sys.exit()
-    except Exception as exc:
-        logger.debug("Single-instance check skipped: %s", exc)
-
-
-check_single_instance()
 
 root.protocol("WM_DELETE_WINDOW", on_close)
 root.bind("<Button-1>", lambda e: e.widget.focus_set())

@@ -60,7 +60,10 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - Added **Blazing Sun** (confirmed against real Roblox logs)
 - Removed Pumpkin Moon and Graveyard
 
-**Critical fix**
+**Critical fixes**
+- **The macro attached to the Roblox Studio log instead of the game log.** It picked the newest log file by creation time, and a Studio log is still a `.log` in the same folder — so if you had opened Studio more recently than the game, the macro sat watching a file that contains no biomes at all and detected nothing, forever. It now only ever attaches to a Player log, chosen by *modification* time so it follows the one actually being written. **This affected anyone with Roblox Studio installed and has been present since long before this release.**
+- Removed Blood Rain.
+
 - **The macro refused to detect anything if the Discord User ID field was empty.** That field is only needed for pings, but the check ran before detection started, so a default config (which ships with it blank) meant hitting Start did nothing at all. Leaving it empty is now fine — you just don't get pinged.
 
 **Lighter and quieter**
@@ -74,7 +77,6 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - Session summary posted when you stop: what you caught and how long you ran
 - Current biome shown in the window title
 - Ping ID can be treated as a **role** instead of a user
-- Warns if a second copy is already running, so you don't get every alert twice
 - Roblox username is attached to biome embeds
 - Test Webhook button
 - Failed webhooks now retry, including proper handling of Discord rate limits

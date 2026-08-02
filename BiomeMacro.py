@@ -164,7 +164,7 @@ DEFAULTS = {
               'roblox_username': "", 'seen_notice': "0"},
     'Settings': {'appearance': "Dark", 'desktop_notifications': "1", 'status_messages': "1",
                  'show_duration': "1", 'autostart': "0", 'poll_interval': "0.1",
-                 'sound_alerts': "1", 'history_csv': "1", 'title_biome': "1", 'ping_role': "0",
+                 'history_csv': "1", 'title_biome': "1", 'ping_role': "0",
                  'session_summary': "1"},
     'Biomes': {},
     # per-biome ping target: <slug> = the id, <slug>_type = user|role.
@@ -250,7 +250,6 @@ desktop_notifications = customtkinter.IntVar(root, int(cfg('Settings', 'desktop_
 status_messages = customtkinter.IntVar(root, int(cfg('Settings', 'status_messages', '1')))
 show_duration = customtkinter.IntVar(root, int(cfg('Settings', 'show_duration', '1')))
 autostart = customtkinter.IntVar(root, int(cfg('Settings', 'autostart', '0')))
-sound_alerts = customtkinter.IntVar(root, int(cfg('Settings', 'sound_alerts', '1')))
 history_csv = customtkinter.IntVar(root, int(cfg('Settings', 'history_csv', '1')))
 title_biome = customtkinter.IntVar(root, int(cfg('Settings', 'title_biome', '1')))
 ping_role = customtkinter.IntVar(root, int(cfg('Settings', 'ping_role', '0')))
@@ -259,7 +258,7 @@ session_summary = customtkinter.IntVar(root, int(cfg('Settings', 'session_summar
 SETTINGS_TK_VARS = {
     'appearance': appearance, 'desktop_notifications': desktop_notifications,
     'status_messages': status_messages, 'show_duration': show_duration, 'autostart': autostart,
-    'sound_alerts': sound_alerts, 'history_csv': history_csv, 'title_biome': title_biome,
+    'history_csv': history_csv, 'title_biome': title_biome,
     'ping_role': ping_role, 'session_summary': session_summary,
 }
 
@@ -282,7 +281,6 @@ RT = {
     'notifications': True,
     'status_messages': True,
     'show_duration': True,
-    'sound': True,
     'history': True,
     'title_biome': True,
     'ping_role': False,
@@ -318,7 +316,6 @@ def refresh_runtime():
     RT['notifications'] = desktop_notifications.get() == 1
     RT['status_messages'] = status_messages.get() == 1
     RT['show_duration'] = show_duration.get() == 1
-    RT['sound'] = sound_alerts.get() == 1
     RT['history'] = history_csv.get() == 1
     RT['title_biome'] = title_biome.get() == 1
     RT['ping_role'] = ping_role.get() == 1
@@ -532,16 +529,6 @@ def make_embed(description, color=None, thumbnail=None, include_ps=False):
     return embed
 
 
-def play_alert():
-    """Audible cue for the biomes worth looking up from whatever else you're doing."""
-    if not RT['sound']:
-        return
-    try:
-        import winsound
-        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
-    except Exception as exc:
-        logger.debug("Sound alert failed: %s", exc)
-
 
 history_lock = threading.Lock()
 
@@ -612,8 +599,6 @@ def announce_biome_start(biome):
     if RT['title_biome'] and not paused:
         set_title(biome)
     notify_desktop("Biome Started", biome)
-    if action == "Ping" or info['everyone']:
-        play_alert()
     if action == "Nothing":
         return
     description = "> ## Biome Started - " + biome

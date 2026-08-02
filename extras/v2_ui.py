@@ -400,7 +400,6 @@ def _build_pages(dpg, api, main):
         with _card("card_settings", height=262):
             for text, var, key in (
                     ("Desktop notifications", "desktop_notifications", "desktop_notifications"),
-                    ("Sound on rare biomes", "sound_alerts", "sound_alerts"),
                     ("Start/stop webhook messages", "status_messages", "status_messages"),
                     ("Show biome duration when it ends", "show_duration", "show_duration"),
                     ("Default ping ID is a role", "ping_role", "ping_role"),

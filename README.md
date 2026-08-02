@@ -95,7 +95,6 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - Biome parsing is ~4x faster and no longer depends on the log line being perfectly formed JSON
 
 **Quality of life**
-- Sound alert on biomes set to Ping
 - Biome history saved to `biome_history.csv` (biome, start/end, duration)
 - Session summary posted when you stop: what you caught and how long you ran
 - Current biome shown in the window title
@@ -120,7 +119,7 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - **Fixed:** if the detection thread died, the window still said "Running" while nothing was being watched. It now says so and tells you to check the log
 - **Fixed:** a slow Discord response could freeze the window when closing the macro
 - **Fixed:** webhook validation accepted any URL containing the word "discord", so a channel link passed and then failed silently at send time
-- New **Settings** tab: Appearance, desktop notifications, sound alerts and start-on-launch, plus Test Webhook / Open Folder / View Log / Reset. Everything else lives in `config.ini`. The Webhook and Credits tabs are pixel-identical to before, and the window is still 505x285
+- New **Settings** tab: Appearance, desktop notifications and start-on-launch, plus Test Webhook / Open Folder / View Log / Reset. Everything else lives in `config.ini`. The Webhook and Credits tabs are pixel-identical to before, and the window is still 505x285
 - Removed the dead "Aura Detection [Not Working]" controls, which had no code behind them
 
 Enjoy!

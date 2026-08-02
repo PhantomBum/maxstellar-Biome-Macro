@@ -1058,6 +1058,8 @@ def toggle_setting(key, var):
     refresh_runtime()
 
 
+# No button in the classic window any more -- kept because plugins call these
+# through api.main, and the v2 UI puts them on its Settings page.
 def open_folder():
     os.startfile(DATA_DIR)
 
@@ -1227,8 +1229,7 @@ appearance_menu.grid(row=0, column=1, sticky="w")
 # messages, biome duration, role pings, session summary, biome in title, history
 # CSV, second-copy warning -- still works, defaults on, and lives in config.ini.
 notif_toggle = add_toggle("Desktop notifications", desktop_notifications, 'desktop_notifications', 1, 0)
-sound_toggle = add_toggle("Sound on rare biomes", sound_alerts, 'sound_alerts', 1, 1)
-autostart_toggle = add_toggle("Start detecting on launch", autostart, 'autostart', 2, 0)
+autostart_toggle = add_toggle("Start detecting on launch", autostart, 'autostart', 1, 1)
 
 button_frame = customtkinter.CTkFrame(settings_scroll, fg_color="transparent")
 button_frame.grid(row=3, column=0, columnspan=2, padx=(10, 0), pady=(14, 0), sticky="w")
@@ -1242,9 +1243,7 @@ def settings_button(text, column, row, command, **kwargs):
 
 
 test_button = settings_button("Test Webhook", 0, 0, send_test_webhook)
-folder_button = settings_button("Open Folder", 1, 0, open_folder)
-log_button = settings_button("View Log", 2, 0, open_crash_log)
-reset_button = settings_button("Reset", 3, 0, reset_settings,
+reset_button = settings_button("Reset", 1, 0, reset_settings,
                                fg_color="#8B2E2E", hover_color="#A33A3A")
 
 settings_info = customtkinter.CTkLabel(settings_scroll,

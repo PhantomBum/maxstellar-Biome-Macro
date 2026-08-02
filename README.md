@@ -60,6 +60,10 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - Added **Blazing Sun** (confirmed against real Roblox logs)
 - Removed Pumpkin Moon and Graveyard
 
+**Detection accuracy**
+- **It now reads the biome you are in the moment it attaches**, from the last rich-presence line in the log, instead of waiting for the next change. Starting the macro during a rare biome used to report nothing at all.
+- **Only fully capitalised hover text counts as a biome.** The presence payload also carries `Sol's RNG`, and anything mixed-case is a title, not a biome — so a payload change can never turn the game's name into a fake biome alert.
+
 **Critical fixes**
 - **The macro attached to the Roblox Studio log instead of the game log.** It picked the newest log file by creation time, and a Studio log is still a `.log` in the same folder — so if you had opened Studio more recently than the game, the macro sat watching a file that contains no biomes at all and detected nothing, forever. It now only ever attaches to a Player log, chosen by *modification* time so it follows the one actually being written. **This affected anyone with Roblox Studio installed and has been present since long before this release.**
 - Removed Blood Rain.

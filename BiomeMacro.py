@@ -658,6 +658,17 @@ def wait_for_log_file(timeout=30):
 # against every rich-presence line in the local logs -- identical results, so this is
 # insurance rather than a fix.
 HOVER_RE = re.compile(r'"largeImage"\s*:\s*\{[^}]*?"hoverText"\s*:\s*"([^"]*)"')
+# Biome names are always written in capitals. The game also puts "Sol's RNG" in the
+# presence payload, and anything mixed-case like that is a title, not a biome --
+# rejecting it means a payload change can never turn the game name into a fake biome.
+BIOME_TEXT_RE = re.compile(r"^[A-Z0-9][A-Z0-9 '&:-]*$")
+
+
+def _clean_hover(hover):
+    hover = (hover or "").strip()
+    if not hover or not BIOME_TEXT_RE.match(hover):
+        return None
+    return hover
 
 
 def parse_hover_text(line):
@@ -665,8 +676,7 @@ def parse_hover_text(line):
         return None
     match = HOVER_RE.search(line)
     if match:
-        hover = match.group(1)
-        return hover.strip().upper() if hover.strip() else None
+        return _clean_hover(match.group(1))
     # fall back to a strict parse in case the presence payload ever changes shape
     start = line.find('{"command":"SetRichPresence"')
     if start == -1:
@@ -675,8 +685,29 @@ def parse_hover_text(line):
         data = json.loads(line[start:])
     except json.JSONDecodeError:
         return None
-    hover = data.get("data", {}).get("largeImage", {}).get("hoverText", "")
-    return hover.strip().upper() if hover else None
+    return _clean_hover(data.get("data", {}).get("largeImage", {}).get("hoverText", ""))
+
+
+def read_current_biome(path, tail_bytes=250000):
+    """Whatever the LAST rich-presence line in the file says is the biome you are in
+    right now. Without this, starting the macro in the middle of a biome meant it had
+    no idea one was running until the next change -- so a rare biome you were already
+    sitting in was never reported."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            if size > tail_bytes:
+                f.seek(size - tail_bytes)
+                f.readline()  # discard the partial line we landed in
+            latest = None
+            for line in f:
+                found = parse_hover_text(line)
+                if found:
+                    latest = found
+            return latest
+    except OSError as exc:
+        logger.warning("Could not read current biome from %s: %s", path, exc)
+        return None
 
 
 def watch_loop():
@@ -727,17 +758,26 @@ def watch_loop():
                         stop_event.wait(1)
                         continue
                     current_path = latest
-                    # A log created in the last minute belongs to a session that just
-                    # started, so read it from the top to catch the biome we joined into.
-                    # Anything older gets tailed from the end so we don't replay history.
-                    try:
-                        brand_new = time.time() - os.path.getctime(latest) < 60
-                    except OSError:
-                        brand_new = False
-                    if not brand_new:
-                        handle.seek(0, 2)
+                    handle.seek(0, 2)  # only ever tail; history comes from the seed below
                     ui_queue.put(("log", f"Using log file: {current_path}"))
-                    set_title("Running")
+                    # Seed from the last rich-presence line so we know the biome that is
+                    # running right now, instead of waiting for the next change. Replaces
+                    # the old "read the whole file if it looks new" guess, which could
+                    # either replay an entire session or miss the current biome entirely.
+                    seeded = read_current_biome(current_path)
+                    if seeded and seeded != last_event:
+                        if seeded == "NORMAL":
+                            last_event = seeded
+                            set_title("Running")
+                        elif not paused:
+                            ui_queue.put(("log", f"Already in {seeded} on attach."))
+                            biome_started_at = time.time()
+                            announce_biome_start(seeded)
+                            last_event = seeded
+                        else:
+                            last_event = seeded
+                    else:
+                        set_title("Running")
                 elif handle is None:
                     ui_queue.put(("log", "No log files found."))
                     stop_event.wait(2)
@@ -932,14 +972,6 @@ def open_crash_log():
     else:
         message_box("Nothing logged yet -- nothing has gone wrong.", "Nothing to show")
 
-
-def open_history():
-    path = os.path.join(DATA_DIR, 'biome_history.csv')
-    if os.path.exists(path):
-        os.startfile(path)
-    else:
-        message_box("No biome history yet. It is written once the macro detects a biome.",
-                    "Nothing to show")
 
 
 def send_test_webhook():

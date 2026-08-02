@@ -115,6 +115,7 @@ def load_biomes():
             'thumbnail': entry.get('thumbnail', name.replace(' ', '_') + '.png'),
             'default': entry.get('default', 'Message'),
             'everyone': bool(entry.get('everyone', False)),
+            'configurable': bool(entry.get('configurable', True)),
             'slug': biome_slug(name),
         }
     return registry
@@ -141,6 +142,7 @@ def biome_info(name):
         'thumbnail': name.replace(' ', '_') + '.png',
         'default': 'Message',
         'everyone': False,
+        'configurable': False,
         'slug': biome_slug(name),
         'unknown': True,
     }
@@ -185,7 +187,9 @@ def ensure_config():
                 config.set(section, key, value)
                 changed = True
     for info in BIOMES.values():
-        if not config.has_option('Biomes', info['slug']):
+        # hard-coded biomes keep their fixed behaviour and stay out of config.ini,
+        # exactly as they did before biomes.json existed
+        if info['configurable'] and not config.has_option('Biomes', info['slug']):
             config.set('Biomes', info['slug'], info['default'])
             changed = True
     if changed:
@@ -301,7 +305,8 @@ def refresh_runtime():
     RT['ping_role'] = ping_role.get() == 1
     RT['session_summary'] = session_summary.get() == 1
     for name, var in biome_vars.items():
-        RT['actions'][name] = var.get()
+        # hard-coded biomes ignore config entirely and always use their fixed action
+        RT['actions'][name] = var.get() if BIOMES[name]['configurable'] else BIOMES[name]['default']
 
 # ---------------------------------------------------------------- state
 
@@ -695,10 +700,15 @@ def init():
     if not have_valid_webhook():
         message_box("Invalid or missing webhook link.", "Error")
         return
-    if not discID.get().strip().isnumeric():
+    # A Discord User ID is only needed to ping. Refusing to start without one meant
+    # anyone using plain "Message" alerts got no detection at all -- the ID field is
+    # blank in a default config, so this silently stopped the macro from ever running.
+    disc = discID.get().strip()
+    if disc and not disc.isnumeric():
         message_box("Discord User ID should only be a number.\n"
                     "If it is something else, such as @everyone, or your username, "
-                    "that is not your Discord User ID.", "Error")
+                    "that is not your Discord User ID.\n\n"
+                    "Leave it empty if you don't want pings.", "Error")
         return
 
     set_cfg('Webhook', 'webhook_url', webhookURL.get())
@@ -873,7 +883,7 @@ def manage_tlw():
     # Same two-column label/dropdown layout as before, just generated from the registry
     # so every biome gets a row -- Heaven and Singularity previously had config entries
     # with no way to change them.
-    names = list(BIOMES.keys())
+    names = [n for n, i in BIOMES.items() if i['configurable']]
     half = (len(names) + 1) // 2
     for index, name in enumerate(names):
         info = BIOMES[name]
@@ -944,22 +954,20 @@ biome_button.grid(row=3, column=0, padx=(10, 0), columnspan=2, pady=(12, 0), sti
 # A scrollable frame keeps the window at its original 505x285 no matter how many
 # settings get added later -- new options scroll instead of overflowing the tab.
 
-settings_scroll = customtkinter.CTkScrollableFrame(tabview.tab("Settings"), width=440, height=155,
-                                                   fg_color="transparent")
-settings_scroll.grid(row=0, column=0, padx=(5, 0), pady=(0, 0), sticky="nw")
+settings_scroll = tabview.tab("Settings")
 
 
 def add_toggle(text, variable, key, row, column):
     box = customtkinter.CTkCheckBox(
-        settings_scroll, text=text, font=customtkinter.CTkFont(family="Segoe UI", size=14),
+        settings_scroll, text=text, font=customtkinter.CTkFont(family="Segoe UI", size=15),
         checkbox_width=20, checkbox_height=20,
         variable=variable, command=lambda: toggle_setting(key, variable))
-    box.grid(row=row, column=column, padx=(5, 8), pady=(7, 0), sticky="w")
+    box.grid(row=row, column=column, padx=(10, 8), pady=(8, 0), sticky="w")
     return box
 
 
 appearance_frame = customtkinter.CTkFrame(settings_scroll, fg_color="transparent")
-appearance_frame.grid(row=0, column=0, columnspan=2, padx=(5, 0), pady=(4, 0), sticky="w")
+appearance_frame.grid(row=0, column=0, columnspan=2, padx=(10, 0), pady=(6, 0), sticky="w")
 appearance_label = customtkinter.CTkLabel(appearance_frame, text="Appearance:",
                                           font=customtkinter.CTkFont(family="Segoe UI", size=15))
 appearance_label.grid(column=0, row=0, padx=(0, 10), sticky="w")
@@ -968,40 +976,38 @@ appearance_menu = customtkinter.CTkOptionMenu(appearance_frame, values=["Dark", 
                                               width=110, height=26, variable=appearance, command=set_appearance)
 appearance_menu.grid(row=0, column=1, sticky="w")
 
-# two columns so ten settings fit with barely any scrolling in the 505x285 window
+# Six settings, two columns, no scrolling. The rest (session summary, biome in
+# title, history CSV, second-copy warning) stay on by default and are editable in
+# config.ini -- they did not earn a place in a 505x285 window.
 notif_toggle = add_toggle("Desktop notifications", desktop_notifications, 'desktop_notifications', 1, 0)
-title_toggle = add_toggle("Biome in window title", title_biome, 'title_biome', 1, 1)
-sound_toggle = add_toggle("Sound on ping biomes", sound_alerts, 'sound_alerts', 2, 0)
-history_toggle = add_toggle("Save biome history", history_csv, 'history_csv', 2, 1)
-status_toggle = add_toggle("Start/stop messages", status_messages, 'status_messages', 3, 0)
-role_toggle = add_toggle("Ping ID is a role", ping_role, 'ping_role', 3, 1)
-summary_toggle = add_toggle("Session summary", session_summary, 'session_summary', 4, 0)
-instance_toggle = add_toggle("Warn if already open", single_instance, 'single_instance', 4, 1)
-duration_toggle = add_toggle("Show biome duration", show_duration, 'show_duration', 5, 0)
-autostart_toggle = add_toggle("Start on launch", autostart, 'autostart', 5, 1)
+sound_toggle = add_toggle("Sound on rare biomes", sound_alerts, 'sound_alerts', 1, 1)
+status_toggle = add_toggle("Start/stop messages", status_messages, 'status_messages', 2, 0)
+duration_toggle = add_toggle("Show biome duration", show_duration, 'show_duration', 2, 1)
+role_toggle = add_toggle("Ping ID is a role", ping_role, 'ping_role', 3, 0)
+autostart_toggle = add_toggle("Start on launch", autostart, 'autostart', 3, 1)
 
 button_frame = customtkinter.CTkFrame(settings_scroll, fg_color="transparent")
-button_frame.grid(row=6, column=0, columnspan=2, padx=(5, 0), pady=(10, 4), sticky="w")
+button_frame.grid(row=4, column=0, columnspan=2, padx=(10, 0), pady=(12, 0), sticky="w")
 
 def settings_button(text, column, row, command, **kwargs):
     button = customtkinter.CTkButton(button_frame, text=text,
                                      font=customtkinter.CTkFont(family="Segoe UI", size=13, weight="bold"),
-                                     width=100, height=26, command=command, **kwargs)
-    button.grid(row=row, column=column, padx=(0, 5), pady=(0, 5))
+                                     width=88, height=26, command=command, **kwargs)
+    button.grid(row=row, column=column, padx=(0, 5))
     return button
 
 
 test_button = settings_button("Test Webhook", 0, 0, send_test_webhook)
 folder_button = settings_button("Open Folder", 1, 0, open_folder)
-history_button = settings_button("Biome History", 0, 1, open_history)
-log_button = settings_button("View Log", 1, 1, open_crash_log)
-reset_button = settings_button("Reset Settings", 0, 2, reset_settings,
+history_button = settings_button("History", 2, 0, open_history)
+log_button = settings_button("View Log", 3, 0, open_crash_log)
+reset_button = settings_button("Reset", 4, 0, reset_settings,
                                fg_color="#8B2E2E", hover_color="#A33A3A")
 
 settings_info = customtkinter.CTkLabel(settings_scroll,
                                        text=f"v{APP_VERSION}  |  {len(BIOMES)} biomes loaded",
                                        font=customtkinter.CTkFont(family="Segoe UI", size=12))
-settings_info.grid(row=7, column=0, columnspan=2, padx=(5, 0), pady=(2, 4), sticky="w")
+settings_info.grid(row=5, column=0, columnspan=2, padx=(10, 0), pady=(6, 0), sticky="w")
 
 # ---------------------------------------------------------------- credits tab
 

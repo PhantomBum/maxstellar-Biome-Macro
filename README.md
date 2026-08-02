@@ -60,6 +60,9 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - Added **Blazing Sun** (confirmed against real Roblox logs)
 - Removed Pumpkin Moon and Graveyard
 
+**Critical fix**
+- **The macro refused to detect anything if the Discord User ID field was empty.** That field is only needed for pings, but the check ran before detection started, so a default config (which ships with it blank) meant hitting Start did nothing at all. Leaving it empty is now fine — you just don't get pinged.
+
 **Quality of life**
 - Sound alert on biomes set to Ping
 - Biome history saved to `biome_history.csv` (biome, start/end, duration)
@@ -83,7 +86,8 @@ When running the .exe, edit the `biomes.json` that appears next to it — no reb
 - Detection moved to a background thread — the window no longer freezes
 - Errors are logged instead of silently swallowed by bare `except: pass`
 - **Fixed:** pausing discarded log lines outright, so resuming could miss the biome you were already in
-- New **Settings** tab holding every new option. The Webhook and Credits tabs are pixel-identical to before, and the window is still 505x285
+- Glitched, Dreamspace, Cyberspace and Singularity stay hard-coded and out of Configure Pings, as before — they are still detected and still ping
+- New **Settings** tab with six options, no scrolling. The Webhook and Credits tabs are pixel-identical to before, and the window is still 505x285
 - Removed the dead "Aura Detection [Not Working]" controls, which had no code behind them
 
 Enjoy!

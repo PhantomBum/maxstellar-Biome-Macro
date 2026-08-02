@@ -7,6 +7,8 @@
     "  thumbnail - filename under thumb_base_url (see BiomeMacro.py). Defaults to name with '_' for spaces.",
     "  default   - Message | Ping | Nothing  (only used the first time, before it's saved to config.ini)",
     "  everyone  - true sends @everyone regardless of the per-biome ping setting.",
+    "  configurable - false hides it from Configure Pings and pins it to its default,",
+    "                 matching how the rare biomes have always been hard-coded.",
     "Unknown biomes still get reported with a fallback colour, so a game update can't silence the macro."
   ],
   "biomes": [
@@ -21,9 +23,9 @@
     { "name": "BLOOD RAIN",   "label": "Blood Rain",   "color": "FF0000", "default": "Message", "everyone": false },
     { "name": "HEAVEN",       "label": "Heaven",       "color": "E8C49E", "default": "Message", "everyone": false },
     { "name": "BLAZING SUN",  "label": "Blazing Sun",  "color": "FFB300", "default": "Message", "everyone": false, "thumbnail": "" },
-    { "name": "SINGULARITY",  "label": "Singularity",  "color": "FFA375", "default": "Ping",    "everyone": false },
-    { "name": "DREAMSPACE",   "label": "Dreamspace",   "color": "FF7DFF", "default": "Ping",    "everyone": true  },
-    { "name": "CYBERSPACE",   "label": "Cyberspace",   "color": "2C53A7", "default": "Ping",    "everyone": true  },
-    { "name": "GLITCHED",     "label": "Glitched",     "color": "65FF65", "default": "Ping",    "everyone": true  }
+    { "name": "SINGULARITY",  "label": "Singularity",  "color": "FFA375", "default": "Message", "everyone": false, "configurable": false },
+    { "name": "DREAMSPACE",   "label": "Dreamspace",   "color": "FF7DFF", "default": "Message", "everyone": true,  "configurable": false },
+    { "name": "CYBERSPACE",   "label": "Cyberspace",   "color": "2C53A7", "default": "Message", "everyone": true,  "configurable": false },
+    { "name": "GLITCHED",     "label": "Glitched",     "color": "65FF65", "default": "Message", "everyone": true,  "configurable": false }
   ]
 }

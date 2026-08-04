@@ -54,7 +54,7 @@ if not os.path.exists(config_name):
     config['Webhook'] = {'webhook_url': "", 'private_server': "", "discord_user_id": "", 'multi_webhook': "0",
                          'multi_webhook_urls': ""}
     config['Macro'] = {'aura_detection': "0", "aura_ping": "0", "min_rarity_to_ping": "", "aura_recording": "0",
-                       "record_hotkey": "win+alt+g", "record_delay": "8", "last_roblox_version": "", "roblox_username": "", "seen_notice": "0"}
+                       "record_hotkey": "win+alt+g", "record_delay": "8", "aura_record_minimum": "1000000", "last_roblox_version": "", "roblox_username": "", "seen_notice": "0"}
     config['Biomes'] = {'windy': "Message", 'snowy': "Message", 'rainy': "Message", 'sand_storm': "Message",
                         'hell': "Message", "starfall": "Message",
                         "corruption": "Message", "null": "Message", "blazing_sun": "Message"}
@@ -212,7 +212,13 @@ blazing_sun = customtkinter.StringVar(root, biome_setting("blazing_sun"))
 
 
 def get_aura_rarity(aura):
-    return aura_rarities.get(aura, 0)
+    if aura in aura_rarities:
+        return aura_rarities[aura]
+    wanted = aura.replace("_", " ").strip().lower()
+    for name in aura_rarities:
+        if name.lower() == wanted:
+            return aura_rarities[name]
+    return 0
 
 
 press_keys = {"win": 0x5B, "ctrl": 0x11, "alt": 0x12, "shift": 0x10, "tab": 0x09, "space": 0x20,
@@ -239,13 +245,22 @@ def press_record_hotkey():
         ctypes.windll.user32.keybd_event(code, 0, 2, 0)
 
 
+def equipped_aura(state):
+    if not state.startswith("Equipped"):
+        return ""
+    aura = state.replace("Equipped", "").strip().strip('"')
+    return "" if aura in ("", "_None_") else aura
+
+
 def aura_rolled(aura):
     rarity = get_aura_rarity(aura)
     minimum = config['Macro'].get('min_rarity_to_ping', "")
     if minimum.isnumeric() and rarity and rarity < int(minimum):
         return
     print(time.strftime('%H:%M:%S') + f": Aura Rolled - {aura}")
-    if aura_recording.get() == 1:
+    record_minimum = config['Macro'].get('aura_record_minimum', "1000000")
+    record_worthy = not record_minimum.isnumeric() or not rarity or rarity >= int(record_minimum)
+    if aura_recording.get() == 1 and record_worthy:
         try:
             delay = config['Macro'].get('record_delay', "8")
             root.after(int(float(delay) * 1000) if delay.replace(".", "").isnumeric() else 8000,
@@ -393,6 +408,22 @@ def check_for_hover_text(file):
     global roblox_version, roblox_username
     last_event = None
     last_aura = None
+    try:
+        file.seek(0)
+        for old_line in file:
+            if '"command":"SetRichPresence"' not in old_line:
+                continue
+            start = old_line.find('{"command":"SetRichPresence"')
+            if start == -1:
+                continue
+            try:
+                found = equipped_aura(json.loads(old_line[start:]).get("data", {}).get("state", ""))
+            except json.JSONDecodeError:
+                continue
+            if found:
+                last_aura = found
+    except Exception:
+        pass
     file.seek(0, 2)
     while True:
         if not stopped:
@@ -411,10 +442,10 @@ def check_for_hover_text(file):
                         if json_data_start != -1:
                             json_data = json.loads(line[json_data_start:])
                             state = json_data.get("data", {}).get("state", "")
-                            if aura_detection.get() == 1 and state.startswith("Equipped"):
-                                aura = state.replace("Equipped", "").strip().strip('"')
-                                if aura and aura != "_None_" and aura != last_aura:
-                                    last_aura = aura
+                            aura = equipped_aura(state)
+                            if aura and aura != last_aura:
+                                last_aura = aura
+                                if aura_detection.get() == 1:
                                     aura_rolled(aura)
                             event = json_data.get("data", {}).get("largeImage", {}).get("hoverText", "")
                             if event and event != last_event:
